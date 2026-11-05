@@ -30,7 +30,7 @@ class _Event(TypedDict):
 
 class Frigate:
     def __init__(self, url: str):
-        self.url: str = url
+        self.url: str = url.rstrip("/")
         self.http: requests.Session = requests.Session()
         self.pending_ends: list[tuple[str, float]] = []  # retried until Frigate accepts them
 
