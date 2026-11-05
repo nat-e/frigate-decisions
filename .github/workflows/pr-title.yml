@@ -1,0 +1,25 @@
+name: PR title
+
+# Squash merges turn the PR title into the commit message on main, and
+# release-please reads those messages to pick the next version and write the
+# changelog. See CONTRIBUTING.md.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions: {}
+
+jobs:
+  conventional-commit:
+    name: Conventional Commit title
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check the PR title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          pattern='^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([a-z0-9-]+\))?!?: .+'
+          if [[ ! "$TITLE" =~ $pattern ]]; then
+            echo "::error::The PR title must look like 'fix: …', 'feat(player): …' or 'feat!: …'. See CONTRIBUTING.md."
+            exit 1
+          fi

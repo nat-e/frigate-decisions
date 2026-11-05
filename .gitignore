@@ -2,3 +2,8 @@
 __pycache__/
 *.egg-info/
 .pytest_cache/
+.ruff_cache/
+
+# Your own settings, with personal camera names and API keys
+/config.yml
+.env

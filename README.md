@@ -3,6 +3,9 @@
 Ask your [Frigate](https://frigate.video) cameras yes/no questions in plain language, and turn the
 answers into Frigate alerts and detections, with their recordings.
 
+> [!WARNING]
+> Frigate Decisions is in early development. Expect bugs and breaking changes between releases until 1.0.
+
 ```yaml
 cameras:
   living_room:
@@ -54,7 +57,7 @@ which needs no login.
 # docker-compose.yml, next to your frigate service
 services:
   frigate-decisions:
-    build: https://github.com/nat-e/frigate-decisions.git
+    image: ghcr.io/nat-e/frigate-decisions:latest
     restart: unless-stopped
     depends_on: [frigate]
     environment:
@@ -65,6 +68,8 @@ services:
 ```
 
 Write `frigate-decisions.yml`, starting from [`examples/config.yml`](examples/config.yml).
+
+To upgrade, run `docker compose pull frigate-decisions && docker compose up -d frigate-decisions`.
 
 ### Alert or detection?
 
@@ -123,14 +128,10 @@ cameras:
 - Events created through the API aren't published on Frigate's `frigate/events` MQTT topic.
 - Every camera is watched in full frames, at the resolution of Frigate's `detect` stream.
 
-## Development
+## Contributing
 
-```sh
-uv sync                                       # install, with the dev tools
-uv run pytest                                 # tests
-uv run frigate-decisions --config config.yml  # run it outside Docker
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-MIT
+[MIT](LICENSE)

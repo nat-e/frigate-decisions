@@ -28,9 +28,9 @@ class RuleState:
     """
 
     def __init__(self, rule: Rule):
-        self.rule = rule
+        self.rule: Rule = rule
         self.first_yes: float | None = None
-        self.last_yes = 0.0
+        self.last_yes: float = 0.0
         self.event_id: str | None = None  # set by the caller once Frigate created the event
 
     @property
