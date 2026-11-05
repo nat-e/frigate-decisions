@@ -9,13 +9,13 @@ EXAMPLE = Path(__file__).parent.parent / "examples" / "config.yml"
 
 def test_example_config_loads() -> None:
     config = load(EXAMPLE)
-    assert config.provider == "jev"
+    assert config.provider.name == "jev"
     assert config.cameras[0].rules[0].question
 
 
 def test_defaults_and_label() -> None:
     config = parse({"cameras": {"door": {"rules": {"parcel": {"question": "Is there a parcel?"}}}}})
-    assert config.frigate_url == "http://frigate:5000"
+    assert (config.frigate.url, config.provider.name, config.provider.model) == ("http://frigate:5000", "jev", None)
     rule = config.cameras[0].rules[0]
     assert (rule.name, rule.label, rule.threshold, rule.min_duration, rule.end_after) == (
         "parcel",
@@ -26,6 +26,12 @@ def test_defaults_and_label() -> None:
     )
 
 
+def test_keys_without_value_get_their_default() -> None:
+    config = parse({"cameras": {"door": {"rules": {"parcel": {"question": "?", "label": None, "threshold": None}}}}})
+    rule = config.cameras[0].rules[0]
+    assert (rule.label, rule.threshold) == ("parcel", 0.6)
+
+
 @pytest.mark.parametrize(
     "data, message",
     [
@@ -34,7 +40,8 @@ def test_defaults_and_label() -> None:
         ({"cameras": ["door"]}, "cameras: expected a mapping"),
         ({"cameras": {"door": {"rules": ["parcel"]}}}, "cameras.door.rules: expected a mapping"),
         ({"cameras": {"door": {}}}, "at least one rule"),
-        ({"cameras": {"door": {"rules": {"parcel": {}}}}}, "question"),
+        ({"cameras": {"door": {"rules": {"parcel": {}}}}}, "cameras.door.rules.parcel: missing 'question'"),
+        ({"cameras": {"door": {"rules": {"parcel": {"question": True}}}}}, "question: expected text"),
         ({"cameras": {"door": {"rules": {"parcel": {"question": "?", "for": 5}}}}}, "unknown key"),
         ({"cameras": {"door": {"rules": {"parcel": {"question": "?", "min_duration": "5s"}}}}}, "expected a number"),
     ],

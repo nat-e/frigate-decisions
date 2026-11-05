@@ -30,17 +30,26 @@ class _Event(TypedDict):
 
 class Frigate:
     def __init__(self, url: str):
-        self.url: str = url
+        self.url: str = url.rstrip("/")
         self.http: requests.Session = requests.Session()
-        self.pending_ends: list[tuple[str, float]] = []  # retried until Frigate accepts them
+        self._pending_ends: list[tuple[str, float]] = []  # retried until Frigate accepts them
 
-    def latest_jpeg(self, camera: str) -> bytes:
-        r = self.http.get(f"{self.url}/api/{camera}/latest.jpg", params={"quality": 90}, timeout=10)
-        r.raise_for_status()
-        return r.content
+    def latest_jpeg(self, camera: str) -> bytes | None:
+        """The camera's current frame, or None on failure.
+
+        Each call also retries the ends Frigate hasn't accepted yet.
+        """
+        self._retry_ends()
+        try:
+            r = self.http.get(f"{self.url}/api/{camera}/latest.jpg", params={"quality": 90}, timeout=10)
+            r.raise_for_status()
+            return r.content
+        except requests.RequestException as e:
+            log.warning("%s: can't get a frame from Frigate: %s", camera, e)
+            return None
 
     def create_event(
-        self, camera: str, label: str, sub_label: str | None, score: float, pre_capture: float
+        self, camera: str, label: str, sub_label: str | None, score: float, start_time: float
     ) -> str | None:
         """Open an event that stays open until end_event(). Returns its id, or None on failure."""
         body = {
@@ -48,7 +57,7 @@ class Frigate:
             "score": round(score, 2),
             "duration": None,
             "include_recording": True,
-            "pre_capture": round(pre_capture),
+            "pre_capture": round(time.time() - start_time),  # Frigate wants the start relative to now
         }
         try:
             r = self.http.post(f"{self.url}/api/events/{camera}/{label}/create", json=body, timeout=10)
@@ -59,11 +68,12 @@ class Frigate:
             return None
 
     def end_event(self, event_id: str, end_time: float) -> None:
-        self.pending_ends.append((event_id, end_time))
-        self.retry_ends()
+        """End the event, now or, if Frigate doesn't accept it, on a later latest_jpeg()."""
+        self._pending_ends.append((event_id, end_time))
+        self._retry_ends()
 
-    def retry_ends(self) -> None:
-        pending, self.pending_ends = self.pending_ends, []
+    def _retry_ends(self) -> None:
+        pending, self._pending_ends = self._pending_ends, []
         for event_id, end_time in pending:
             try:
                 r = self.http.put(f"{self.url}/api/events/{event_id}/end", json={"end_time": end_time}, timeout=10)
@@ -71,7 +81,7 @@ class Frigate:
                     raise requests.HTTPError(f"HTTP {r.status_code}")
             except requests.RequestException as e:
                 log.warning("can't end event %s yet: %s", event_id, e)
-                self.pending_ends.append((event_id, end_time))
+                self._pending_ends.append((event_id, end_time))
 
     def end_leftover_events(self, camera: str, labels: set[str]) -> None:
         """Events left open by a previous run would keep their review item open forever: end them."""

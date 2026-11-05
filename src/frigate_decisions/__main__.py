@@ -24,11 +24,15 @@ def main() -> None:
 
     try:
         config = load(config_path)
-        provider = make_provider(config.provider, config.model)
+        provider = make_provider(config.provider.name, config.provider.model)
     except (ConfigError, ValueError) as e:
         sys.exit(f"frigate-decisions: {e}")
 
-    watchers = [Watcher(camera, Frigate(config.frigate_url), provider) for camera in config.cameras]
+    watchers: list[Watcher] = []
+    for camera in config.cameras:
+        frigate = Frigate(config.frigate.url)
+        frigate.end_leftover_events(camera.name, {rule.label for rule in camera.rules})
+        watchers.append(Watcher(camera, frigate, provider))
     for watcher in watchers:
         watcher.start()
     for watcher in watchers:

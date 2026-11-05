@@ -6,7 +6,6 @@ import threading
 import time
 from typing import Protocol, override
 
-import requests
 from PIL import Image, ImageChops, ImageFilter
 
 from .config import Camera
@@ -21,17 +20,13 @@ log = logging.getLogger(__name__)
 class FrigateAPI(Protocol):
     """The Frigate calls a Watcher makes. frigate.Frigate makes them for real; tests fake them."""
 
-    def latest_jpeg(self, camera: str) -> bytes: ...
+    def latest_jpeg(self, camera: str) -> bytes | None: ...
 
     def create_event(
-        self, camera: str, label: str, sub_label: str | None, score: float, pre_capture: float
+        self, camera: str, label: str, sub_label: str | None, score: float, start_time: float
     ) -> str | None: ...
 
     def end_event(self, event_id: str, end_time: float) -> None: ...
-
-    def retry_ends(self) -> None: ...
-
-    def end_leftover_events(self, camera: str, labels: set[str]) -> None: ...
 
 
 class MotionCheck:
@@ -69,7 +64,6 @@ class Watcher(threading.Thread):
 
     @override
     def run(self) -> None:
-        self.frigate.end_leftover_events(self.camera.name, {rule.label for rule in self.camera.rules})
         log.info("%s: watching, %d rule(s)", self.camera.name, len(self.rules))
         while True:
             time.sleep(POLL_S)
@@ -80,13 +74,7 @@ class Watcher(threading.Thread):
 
     def step(self, now: float) -> None:
         cam = self.camera
-        self.frigate.retry_ends()
-        try:
-            jpeg = self.frigate.latest_jpeg(cam.name)
-        except requests.RequestException as e:
-            log.warning("%s: can't get a frame from Frigate: %s", cam.name, e)
-            jpeg = None
-
+        jpeg = self.frigate.latest_jpeg(cam.name)
         if jpeg is not None:
             moved = self.motion.changed(jpeg)
             if moved >= cam.motion_threshold:
@@ -117,8 +105,11 @@ class Watcher(threading.Thread):
 
         for state in self.rules:
             rule = state.rule
-            if start := state.answer(answers[rule.name], now):
-                state.event_id = self.frigate.create_event(
-                    self.camera.name, rule.label, rule.sub_label, start.score, start.pre_capture
-                )
-                log.info("%s: %s started: event %s", self.camera.name, rule.name, state.event_id)
+            if not (start := state.answer(answers[rule.name], now)):
+                continue
+            event_id = self.frigate.create_event(
+                self.camera.name, rule.label, rule.sub_label, start.score, start.start_time
+            )
+            if event_id:  # otherwise the next "yes" tries again
+                state.started(event_id)
+                log.info("%s: %s started: event %s", self.camera.name, rule.name, event_id)

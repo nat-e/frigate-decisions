@@ -23,19 +23,13 @@ class FakeFrigate:
         return next(self.frames)
 
     def create_event(
-        self, camera: str, label: str, sub_label: str | None, score: float, pre_capture: float
+        self, camera: str, label: str, sub_label: str | None, score: float, start_time: float
     ) -> str | None:
         self.created.append((camera, label, sub_label))
         return f"evt{len(self.created)}"
 
     def end_event(self, event_id: str, end_time: float) -> None:
         self.ended.append(event_id)
-
-    def retry_ends(self) -> None:
-        pass
-
-    def end_leftover_events(self, camera: str, labels: set[str]) -> None:
-        pass
 
 
 class FakeProvider:
