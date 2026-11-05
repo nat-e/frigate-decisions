@@ -12,7 +12,7 @@ def feed(state: RuleState, answers: Iterable[tuple[float, float]]) -> list[Start
     for now, p in answers:
         if start := state.answer(p, now):
             happened.append(start)
-            state.event_id = "evt"
+            state.started("evt")
         if end := state.check_end(now):
             happened.append(end)
     return happened
@@ -53,3 +53,13 @@ def test_pending_rule_gives_up_quietly_when_answers_stop() -> None:
 def test_zero_min_duration_starts_on_first_yes() -> None:
     rule = Rule(name="cat_seen", question="Is there a cat?", min_duration=0)
     assert feed(RuleState(rule), [(0, 0.3), (2, 0.7)]) == [Start(0.7, PADDING_S)]
+
+
+def test_start_repeats_until_started() -> None:
+    state = RuleState(RULE)
+    assert state.answer(0.9, 0) is None
+    assert state.answer(0.9, 6) == Start(0.9, 6 + PADDING_S)
+    assert state.answer(0.8, 8) == Start(0.8, 8 + PADDING_S)  # Frigate didn't create the event: again
+    assert state.answer(0.2, 10) is None  # and a "no" still resets the wait
+    assert state.answer(0.9, 12) is None
+    assert state.answer(0.9, 17) == Start(0.9, 5 + PADDING_S)

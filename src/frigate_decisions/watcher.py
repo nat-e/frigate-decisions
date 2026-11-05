@@ -117,8 +117,11 @@ class Watcher(threading.Thread):
 
         for state in self.rules:
             rule = state.rule
-            if start := state.answer(answers[rule.name], now):
-                state.event_id = self.frigate.create_event(
-                    self.camera.name, rule.label, rule.sub_label, start.score, start.pre_capture
-                )
-                log.info("%s: %s started: event %s", self.camera.name, rule.name, state.event_id)
+            if not (start := state.answer(answers[rule.name], now)):
+                continue
+            event_id = self.frigate.create_event(
+                self.camera.name, rule.label, rule.sub_label, start.score, start.pre_capture
+            )
+            if event_id:  # otherwise the next "yes" tries again
+                state.started(event_id)
+                log.info("%s: %s started: event %s", self.camera.name, rule.name, event_id)
