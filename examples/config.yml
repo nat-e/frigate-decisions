@@ -1,0 +1,32 @@
+# frigate-decisions example: two cameras, three questions.
+# Each rule is a yes/no question. When the answer stays "yes" long enough, a Frigate event is
+# created with the rule's label; it ends once the answer has been "no" for a while.
+
+frigate:
+  url: http://frigate:5000 # Frigate's internal API, on the same Docker network
+
+provider:
+  name: jev
+  model: jev-1.14.0 # optional: pin the model version your thresholds were tuned with
+
+cameras:
+  living_room: # the camera's name in Frigate
+    context: Indoor camera above the TV, looking at a grey sofa and a rug.
+    rules:
+      dog_on_sofa:
+        question: Is a dog lying or sitting on the sofa (not on the floor or the rug)?
+        min_duration: 10 # seconds of "yes" before the event starts
+        sub_label: Sofa
+
+  front_door:
+    context: Doorbell camera looking down at the front step.
+    ask_every: 5 # seconds between questions while something moves
+    rules:
+      parcel_delivered:
+        question: Is there a parcel or package lying on the doorstep?
+        threshold: 0.8 # be stricter: only alert when the model is quite sure
+        min_duration: 10
+        end_after: 60 # stays "on" through brief "no" answers, e.g. someone stepping over it
+      person_at_door:
+        question: Is a person standing at the door, facing it?
+        label: visitor
