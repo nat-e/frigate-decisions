@@ -37,7 +37,7 @@ class Frigate:
     def latest_jpeg(self, camera: str) -> bytes | None:
         """The camera's current frame, or None on failure.
 
-        Also retries the ends Frigate didn't accept yet: the watcher calls this every second.
+        Each call also retries the ends Frigate hasn't accepted yet.
         """
         self._retry_ends()
         try:
