@@ -23,7 +23,7 @@ class FakeFrigate:
         return next(self.frames)
 
     def create_event(
-        self, camera: str, label: str, sub_label: str | None, score: float, pre_capture: float
+        self, camera: str, label: str, sub_label: str | None, score: float, start_time: float
     ) -> str | None:
         self.created.append((camera, label, sub_label))
         return f"evt{len(self.created)}"

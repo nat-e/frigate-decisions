@@ -10,7 +10,7 @@ PADDING_S = 5  # extra video kept before and after each event
 @dataclass(frozen=True)
 class Start:
     score: float
-    pre_capture: float  # seconds before now where the event begins
+    start_time: float
 
 
 @dataclass(frozen=True)
@@ -49,7 +49,7 @@ class RuleState:
                 self.first_yes = now
             self.last_yes = now
             if self._event_id is None and now - self.first_yes >= self.rule.min_duration:
-                return Start(score=probability, pre_capture=now - self.first_yes + PADDING_S)
+                return Start(score=probability, start_time=self.first_yes - PADDING_S)
         elif self._event_id is None:
             self.first_yes = None  # interrupted before the event started: start over
         return None

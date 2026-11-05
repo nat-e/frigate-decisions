@@ -40,7 +40,7 @@ class Frigate:
         return r.content
 
     def create_event(
-        self, camera: str, label: str, sub_label: str | None, score: float, pre_capture: float
+        self, camera: str, label: str, sub_label: str | None, score: float, start_time: float
     ) -> str | None:
         """Open an event that stays open until end_event(). Returns its id, or None on failure."""
         body = {
@@ -48,7 +48,7 @@ class Frigate:
             "score": round(score, 2),
             "duration": None,
             "include_recording": True,
-            "pre_capture": round(pre_capture),
+            "pre_capture": round(time.time() - start_time),  # Frigate wants the start relative to now
         }
         try:
             r = self.http.post(f"{self.url}/api/events/{camera}/{label}/create", json=body, timeout=10)

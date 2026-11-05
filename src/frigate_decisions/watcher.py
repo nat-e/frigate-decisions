@@ -24,7 +24,7 @@ class FrigateAPI(Protocol):
     def latest_jpeg(self, camera: str) -> bytes: ...
 
     def create_event(
-        self, camera: str, label: str, sub_label: str | None, score: float, pre_capture: float
+        self, camera: str, label: str, sub_label: str | None, score: float, start_time: float
     ) -> str | None: ...
 
     def end_event(self, event_id: str, end_time: float) -> None: ...
@@ -120,7 +120,7 @@ class Watcher(threading.Thread):
             if not (start := state.answer(answers[rule.name], now)):
                 continue
             event_id = self.frigate.create_event(
-                self.camera.name, rule.label, rule.sub_label, start.score, start.pre_capture
+                self.camera.name, rule.label, rule.sub_label, start.score, start.start_time
             )
             if event_id:  # otherwise the next "yes" tries again
                 state.started(event_id)
