@@ -28,8 +28,6 @@ class FrigateAPI(Protocol):
 
     def end_event(self, event_id: str, end_time: float) -> None: ...
 
-    def end_leftover_events(self, camera: str, labels: set[str]) -> None: ...
-
 
 class MotionCheck:
     """Cheap frame-to-frame difference on a small blurred grayscale copy."""
@@ -66,7 +64,6 @@ class Watcher(threading.Thread):
 
     @override
     def run(self) -> None:
-        self.frigate.end_leftover_events(self.camera.name, {rule.label for rule in self.camera.rules})
         log.info("%s: watching, %d rule(s)", self.camera.name, len(self.rules))
         while True:
             time.sleep(POLL_S)
