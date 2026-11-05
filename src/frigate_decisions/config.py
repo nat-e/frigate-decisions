@@ -2,9 +2,12 @@
 
 from dataclasses import dataclass, fields
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, cast
 
 import yaml
+
+if TYPE_CHECKING:
+    from _typeshed import DataclassInstance
 
 
 class ConfigError(Exception):
@@ -44,43 +47,55 @@ class Config:
 
 def load(path: Path) -> Config:
     try:
-        data = yaml.safe_load(path.read_text()) or {}
+        data = cast("object", yaml.safe_load(path.read_text()))  # any YAML value: parse() checks it
     except (OSError, yaml.YAMLError) as e:
         raise ConfigError(f"can't read {path}: {e}") from e
     return parse(data)
 
 
-def parse(data: dict[str, Any]) -> Config:
-    _check_keys(data, {"frigate", "provider", "cameras"}, "config")
-    frigate = data.get("frigate") or {}
+def parse(data: object) -> Config:
+    root = _mapping(data, "config")
+    _check_keys(root, {"frigate", "provider", "cameras"}, "config")
+    frigate = _mapping(root.get("frigate"), "frigate")
     _check_keys(frigate, {"url"}, "frigate")
-    provider = data.get("provider") or {}
+    provider = _mapping(root.get("provider"), "provider")
     _check_keys(provider, {"name", "model"}, "provider")
-    if not data.get("cameras"):
+    cameras_data = _mapping(root.get("cameras"), "cameras")
+    if not cameras_data:
         raise ConfigError("config: add at least one camera under 'cameras'")
 
-    cameras = []
-    for cam_name, cam in data["cameras"].items():
+    cameras: list[Camera] = []
+    for cam_name, cam_data in cameras_data.items():
         where = f"cameras.{cam_name}"
-        cam = dict(cam or {})
-        rules = cam.pop("rules", None)
-        if not rules:
+        cam = _mapping(cam_data, where)
+        rules_data = _mapping(cam.pop("rules", None), f"{where}.rules")
+        if not rules_data:
             raise ConfigError(f"{where}: add at least one rule under 'rules'")
-        parsed_rules = tuple(
-            _build(Rule, {"label": name, **(rule or {})}, f"{where}.rules.{name}", name=name)
-            for name, rule in rules.items()
+        rules = tuple(
+            _build(Rule, {"label": name, **_mapping(rule, f"{where}.rules.{name}")}, f"{where}.rules.{name}", name=name)
+            for name, rule in rules_data.items()
         )
-        cameras.append(_build(Camera, cam, where, name=cam_name, rules=parsed_rules))
+        cameras.append(_build(Camera, cam, where, name=cam_name, rules=rules))
 
+    model = provider.get("model")
     return Config(
         frigate_url=str(frigate.get("url", "http://frigate:5000")).rstrip("/"),
-        provider=provider.get("name", "jev"),
-        model=provider.get("model"),
+        provider=str(provider.get("name", "jev")),
+        model=None if model is None else str(model),
         cameras=tuple(cameras),
     )
 
 
-def _build(cls: type, data: dict[str, Any], where: str, **fixed: Any) -> Any:
+def _mapping(value: object, where: str) -> dict[str, object]:
+    """`value` as a mapping with text keys: an empty one when the YAML key has no value."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ConfigError(f"{where}: expected a mapping of keys to values, got {value!r}")
+    return {str(k): v for k, v in cast("dict[object, object]", value).items()}
+
+
+def _build[T: DataclassInstance](cls: type[T], data: dict[str, object], where: str, **fixed: object) -> T:
     """Make a `cls` from `data`, with clear errors for unknown or missing keys."""
     allowed = {f.name for f in fields(cls)} - set(fixed)
     _check_keys(data, allowed, where)
@@ -94,7 +109,7 @@ def _build(cls: type, data: dict[str, Any], where: str, **fixed: Any) -> Any:
         raise ConfigError(f"{where}: {e}") from e
 
 
-def _check_keys(data: dict[str, Any], allowed: set[str], where: str) -> None:
+def _check_keys(data: dict[str, object], allowed: set[str], where: str) -> None:
     unknown = set(data) - allowed
     if unknown:
         raise ConfigError(f"{where}: unknown key(s) {sorted(unknown)}, expected some of {sorted(allowed)}")

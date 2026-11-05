@@ -1,0 +1,21 @@
+{
+	"$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+	"bootstrap-sha": "3d6bfd008a7473cc2b9c8081a604d9fa412c4253",
+	"include-component-in-tag": false,
+	"packages": {
+		".": {
+			"release-type": "python",
+			"package-name": "frigate-decisions",
+			"bump-minor-pre-major": true,
+			"bump-patch-for-minor-pre-major": true,
+			"prerelease": true,
+			"extra-files": [
+				{
+					"type": "toml",
+					"path": "uv.lock",
+					"jsonpath": "$.package[?(@.name.value=='frigate-decisions')].version"
+				}
+			]
+		}
+	}
+}

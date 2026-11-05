@@ -1,0 +1,60 @@
+{
+	"$schema": "https://docs.renovatebot.com/renovate-schema.json",
+	"extends": [
+		"config:recommended",
+		":semanticCommits",
+		":prHourlyLimitNone",
+		":maintainLockFilesWeekly",
+		"helpers:pinGitHubActionDigests",
+		"customManagers:githubActionsVersions"
+	],
+	"schedule": ["* 0-5 * * 1"],
+	"minimumReleaseAge": "7 days",
+	"platformAutomerge": false,
+	"packageRules": [
+		{
+			"description": "One weekly PR for all patch updates, merged by Renovate once CI passes",
+			"matchUpdateTypes": ["patch"],
+			"groupName": "patch dependencies",
+			"groupSlug": "patch",
+			"automerge": true
+		},
+		{
+			"description": "One weekly PR for all minor updates, merged by hand",
+			"matchUpdateTypes": ["minor"],
+			"groupName": "minor dependencies",
+			"groupSlug": "minor"
+		},
+		{
+			"description": "Python in .python-version and in the Dockerfile move together",
+			"matchDepNames": ["python"],
+			"groupName": "python",
+			"groupSlug": "python"
+		},
+		{
+			"description": "uv in the Dockerfile, in CI and the uv_build backend move together",
+			"matchDepNames": ["astral-sh/uv", "ghcr.io/astral-sh/uv", "uv_build"],
+			"groupName": "uv",
+			"groupSlug": "uv"
+		},
+		{
+			"description": "GitHub Actions and reusable workflows in one PR, merged by Renovate once CI passes",
+			"matchManagers": ["github-actions"],
+			"matchDepTypes": ["action", "workflow"],
+			"groupName": "github actions",
+			"groupSlug": "github-actions",
+			"automerge": true
+		},
+		{
+			"description": "Updates that change what runs in the published image are fixes, so release-please lists them and proposes a release",
+			"matchManagers": ["pep621"],
+			"matchDepTypes": ["project.dependencies"],
+			"semanticCommitType": "fix"
+		},
+		{
+			"description": "Updates that change what runs in the published image are fixes, so release-please lists them and proposes a release",
+			"matchFileNames": ["Dockerfile"],
+			"semanticCommitType": "fix"
+		}
+	]
+}

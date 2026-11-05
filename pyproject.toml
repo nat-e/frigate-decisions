@@ -21,5 +21,27 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "basedpyright>=1.40.2",
     "pytest>=9.2.0",
+    "ruff>=0.17.3",
+    "types-pyyaml>=6.0.12.20261103",
+]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+extend-select = [
+    "B",   # likely bugs
+    "I",   # import order
+    "RUF", # ruff's own rules
+    "SIM", # simpler code
+    "UP",  # newer Python syntax
+]
+
+[tool.basedpyright]
+include = ["src", "tests"]
+executionEnvironments = [
+    # Test fakes take the arguments of what they replace, without using them all
+    { root = "tests", reportUnusedParameter = false },
 ]

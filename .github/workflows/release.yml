@@ -1,0 +1,33 @@
+name: Release
+
+# Keeps a release PR open that bumps the version in pyproject.toml and uv.lock and updates
+# CHANGELOG.md. Merging it tags the release, and the tag's CI run publishes
+# the versioned image.
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}
+
+jobs:
+  release-please:
+    runs-on: ubuntu-24.04
+    steps:
+      # The App's token, unlike GITHUB_TOKEN, lets the release PR run CI and
+      # the release tag trigger the image build.
+      - name: Get a token from the GitHub App
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.BOT_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ steps.app-token.outputs.token }}

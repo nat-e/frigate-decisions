@@ -14,4 +14,5 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked
 
 ENV PATH="/app/.venv/bin:$PATH"
+USER nobody
 CMD ["frigate-decisions", "--config", "/config/config.yml"]

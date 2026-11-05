@@ -1,0 +1,151 @@
+name: CI
+
+on: # zizmor: ignore[cache-poisoning] only checks use these caches; the published image is built by docker/github-builder, which signs its own cache
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions: {}
+
+# A new push to a pull request cancels its previous run. Runs on main and on
+# tags queue up instead, so every published image comes from a finished run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  checks:
+    name: Checks and tests
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      # renovate: datasource=github-releases depName=astral-sh/uv
+      UV_VERSION: 0.13.7
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv, and Python from .python-version
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - run: uv sync --locked
+      - run: uv run ruff format --check
+      - run: uv run ruff check
+      - run: uv run basedpyright
+      - run: uv run pytest
+
+  workflows:
+    name: Workflow security
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: zizmorcore/zizmor-action@53290badfa369cb0bf7ad16342cb62c2fa47ac7b # v0.8.0
+        with:
+          advanced-security: false
+
+  image:
+    name: Image smoke test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/frigate-decisions:ci
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build the image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: ${{ env.IMAGE }}
+          cache-from: type=gha,scope=smoke-test
+          cache-to: type=gha,scope=smoke-test,mode=max
+
+      # The image needs a Frigate server to do anything, so this only checks
+      # that the app is installed and starts.
+      - name: Check that the app starts
+        run: docker run --rm "$IMAGE" frigate-decisions --help
+
+      - name: Scan the image for known vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+          # Report only: findings don't block the build
+          exit-code: "0"
+
+  publish:
+    name: Publish image
+    needs: [checks, image]
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    # Builds each platform on its own native runner, then pushes one
+    # multi-platform image with provenance attestations.
+    uses: docker/github-builder/.github/workflows/build.yml@cbc9d42f8c89a55623392aadd03600965b80e963 # v1.18.1
+    with:
+      output: image
+      push: true
+      # arm64 for Frigate boxes like the Raspberry Pi
+      platforms: linux/amd64,linux/arm64
+      sign: auto
+      cache: true
+      cache-mode: max
+      set-meta-labels: true
+      meta-images: ghcr.io/${{ github.repository_owner }}/frigate-decisions
+      # main publishes `edge` and the commit SHA. A release tag (v1.2.3)
+      # publishes `1.2.3`, `1.2` and `latest`.
+      meta-tags: |
+        type=edge,branch=main
+        type=sha,format=long,prefix=
+        type=semver,pattern={{version}}
+        type=semver,pattern={{major}}.{{minor}}
+    secrets:
+      registry-auths: |
+        - registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+  vulnerability-report:
+    name: Vulnerability report
+    needs: publish
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    permissions:
+      packages: read
+      security-events: write
+    steps:
+      - name: Scan the published image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ghcr.io/${{ github.repository_owner }}/frigate-decisions:${{ github.sha }}
+          ignore-unfixed: true
+          format: sarif
+          output: trivy.sarif
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Send the results to the Security tab
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          sarif_file: trivy.sarif

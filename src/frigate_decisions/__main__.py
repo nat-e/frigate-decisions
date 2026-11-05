@@ -4,6 +4,7 @@ import argparse
 import logging
 import sys
 from pathlib import Path
+from typing import cast
 
 from . import __doc__ as description
 from .config import ConfigError, load
@@ -14,15 +15,15 @@ from .watcher import Watcher
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="frigate-decisions", description=description)
-    parser.add_argument("--config", type=Path, default=Path("/config/config.yml"))
-    args = parser.parse_args()
+    _ = parser.add_argument("--config", type=Path, default=Path("/config/config.yml"))
+    config_path = cast("Path", parser.parse_args().config)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S")
     for noisy in ("httpx2", "httpcore2", "urllib3", "typesafe_sdk"):  # one line per HTTP request otherwise
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
     try:
-        config = load(args.config)
+        config = load(config_path)
         provider = make_provider(config.provider, config.model)
     except (ConfigError, ValueError) as e:
         sys.exit(f"frigate-decisions: {e}")

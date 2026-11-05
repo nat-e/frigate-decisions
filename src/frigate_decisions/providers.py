@@ -18,20 +18,23 @@ class Provider(Protocol):
 class Jev:
     """TypeSafe Jev (https://docs.typesafe.ai). Reads the API key from TYPESAFE_API_KEY."""
 
-    MIN_SIDE, MAX_SIDE = 280, 1568  # image size Jev accepts, in pixels per side
+    # Image size Jev accepts, in pixels per side
+    MIN_SIDE: int = 280
+    MAX_SIDE: int = 1568
 
     def __init__(self, model: str | None = None):
         from typesafe_sdk import TypeSafeClient  # imported here: only needed when Jev is used
 
-        self.client = TypeSafeClient(model=model) if model else TypeSafeClient()
+        self.client: TypeSafeClient = TypeSafeClient(model=model) if model else TypeSafeClient()
 
     def ask(self, image: bytes, context: str | None, questions: dict[str, str]) -> dict[str, float]:
         from typesafe_sdk import Image, Noul
 
-        state: dict = {"frame": Image(self._fit(image))}
+        state: dict[str, Image | str] = {"frame": Image(self._fit(image))}
         if context:
             state["context"] = context
-        result = self.client.system_one(
+        # The SDK's types for JSON values are partly unknown
+        result = self.client.system_one(  # pyright: ignore[reportUnknownMemberType]
             state=state,
             questions={
                 name: Noul(instructions=f"Looking at the camera image `frame`: {text}")
@@ -49,7 +52,10 @@ class Jev:
         if scale == 1.0:
             return jpeg
         out = io.BytesIO()
-        img.convert("RGB").resize((round(img.width * scale), round(img.height * scale))).save(out, "JPEG", quality=90)
+        size = (round(img.width * scale), round(img.height * scale))
+        # Pillow's type for `size` includes numpy arrays, unknown without numpy installed
+        resized = img.convert("RGB").resize(size)  # pyright: ignore[reportUnknownMemberType]
+        resized.save(out, "JPEG", quality=90)
         return out.getvalue()
 
 

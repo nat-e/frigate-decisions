@@ -4,3 +4,7 @@
 tests/
 examples/
 **/__pycache__/
+.ruff_cache/
+.github/
+config.yml
+.env
