@@ -6,7 +6,6 @@ import threading
 import time
 from typing import Protocol, override
 
-import requests
 from PIL import Image, ImageChops, ImageFilter
 
 from .config import Camera
@@ -21,15 +20,13 @@ log = logging.getLogger(__name__)
 class FrigateAPI(Protocol):
     """The Frigate calls a Watcher makes. frigate.Frigate makes them for real; tests fake them."""
 
-    def latest_jpeg(self, camera: str) -> bytes: ...
+    def latest_jpeg(self, camera: str) -> bytes | None: ...
 
     def create_event(
         self, camera: str, label: str, sub_label: str | None, score: float, start_time: float
     ) -> str | None: ...
 
     def end_event(self, event_id: str, end_time: float) -> None: ...
-
-    def retry_ends(self) -> None: ...
 
     def end_leftover_events(self, camera: str, labels: set[str]) -> None: ...
 
@@ -80,13 +77,7 @@ class Watcher(threading.Thread):
 
     def step(self, now: float) -> None:
         cam = self.camera
-        self.frigate.retry_ends()
-        try:
-            jpeg = self.frigate.latest_jpeg(cam.name)
-        except requests.RequestException as e:
-            log.warning("%s: can't get a frame from Frigate: %s", cam.name, e)
-            jpeg = None
-
+        jpeg = self.frigate.latest_jpeg(cam.name)
         if jpeg is not None:
             moved = self.motion.changed(jpeg)
             if moved >= cam.motion_threshold:

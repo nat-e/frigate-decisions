@@ -31,9 +31,6 @@ class FakeFrigate:
     def end_event(self, event_id: str, end_time: float) -> None:
         self.ended.append(event_id)
 
-    def retry_ends(self) -> None:
-        pass
-
     def end_leftover_events(self, camera: str, labels: set[str]) -> None:
         pass
 
