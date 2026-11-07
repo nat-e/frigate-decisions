@@ -85,12 +85,42 @@ output_tokens = meter.create_counter("gen_ai.client.inference.usage.output_token
 input_tokens_per_call = meter.create_histogram(
     "gen_ai.client.inference.operation.input_tokens",
     unit="{token}",
-    explicit_bucket_boundaries_advisory=(1, 4, 16, 64, 256, 1024, 4096, 16384, 65536),
+    explicit_bucket_boundaries_advisory=(
+        1,
+        4,
+        16,
+        64,
+        256,
+        1024,
+        4096,
+        16384,
+        65536,
+        262144,
+        1048576,
+        4194304,
+        16777216,
+        67108864,
+    ),
 )
 output_tokens_per_call = meter.create_histogram(
     "gen_ai.client.inference.operation.output_tokens",
     unit="{token}",
-    explicit_bucket_boundaries_advisory=(1, 4, 16, 64, 256, 1024, 4096, 16384, 65536),
+    explicit_bucket_boundaries_advisory=(
+        1,
+        4,
+        16,
+        64,
+        256,
+        1024,
+        4096,
+        16384,
+        65536,
+        262144,
+        1048576,
+        4194304,
+        16777216,
+        67108864,
+    ),
 )
 
 
@@ -108,67 +138,52 @@ def _capture_content(value: str) -> tuple[bool, bool]:
 
 
 class Inference:
-    """Records a provider response without changing the provider's return type."""
+    """Records response metadata before the caller validates and consumes its answers."""
 
-    def __init__(self, span: trace.Span, attributes: dict[str, str | int]):
+    def __init__(
+        self,
+        span: trace.Span,
+        attributes: dict[str, str | int],
+        details: dict[str, AnyValue],
+        capture: tuple[bool, bool],
+    ):
         self._span: trace.Span = span
         self._attributes: dict[str, str | int] = attributes
-        self._capture_span: bool
-        self._capture_event: bool
-        self._capture_span, self._capture_event = _capture_content(
-            os.environ.get("OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT", "NO_CONTENT") or "NO_CONTENT"
-        )
+        self._details: dict[str, AnyValue] = details
+        self._capture: tuple[bool, bool] = capture
 
-    def response(
-        self,
-        model: str,
-        input_count: int | None,
-        output_count: int | None,
-        context: str | None,
-        questions: dict[str, str],
-        answers: dict[str, float],
-    ) -> None:
+    def response(self, model: str, input_count: int | None, output_count: int | None) -> None:
         self._attributes["gen_ai.response.model"] = model
         self._span.set_attribute("gen_ai.response.model", model)
-        usage: dict[str, AnyValue] = {}
         for direction, count, counter, histogram in (
             ("input", input_count, input_tokens, input_tokens_per_call),
             ("output", output_count, output_tokens, output_tokens_per_call),
         ):
             if count is not None:
                 self._span.set_attribute(f"gen_ai.usage.{direction}_tokens", count)
-                usage[f"gen_ai.usage.{direction}_tokens"] = count
+                self._details[f"gen_ai.usage.{direction}_tokens"] = count
                 histogram.record(count, self._attributes)
                 if count > 0:
                     counter.add(count, {**self._attributes, "gen_ai.token.modality": "unknown"})
 
-        if self._capture_span or self._capture_event:
-            # TypeSafe accepts structured state, not chat messages; keep its text in one user message.
-            content: dict[str, AnyValue] = {
-                "gen_ai.input.messages": [
-                    {
-                        "role": "user",
-                        "parts": [
-                            {"type": "text", "content": json.dumps({"context": context, "questions": questions})}
-                        ],
-                    }
-                ],
-                "gen_ai.output.messages": [
-                    {"role": "assistant", "parts": [{"type": "text", "content": json.dumps(answers)}]}
-                ],
-            }
-            if self._capture_span:
-                self._span.set_attributes(content)
-            if self._capture_event:
-                events.emit(
-                    event_name="gen_ai.client.inference.operation.details",
-                    severity_number=SeverityNumber.INFO,
-                    attributes={**self._attributes, **usage, **content},
-                )
+    def output(self, answers: dict[str, float]) -> None:
+        if any(self._capture):
+            messages: AnyValue = [{"role": "assistant", "parts": [{"type": "text", "content": json.dumps(answers)}]}]
+            self._details["gen_ai.output.messages"] = messages
+            if self._capture[0]:
+                self._span.set_attribute("gen_ai.output.messages", messages)
 
 
 @contextmanager
-def inference(provider: str, operation: str, model: str, server_url: str) -> Generator[Inference]:
+def inference(
+    provider: str,
+    operation: str,
+    model: str,
+    server_url: str,
+    *,
+    context: str | None = None,
+    questions: dict[str, str] | None = None,
+) -> Generator[Inference]:
     """One logical model request, including retries; errors contain only their class name."""
     server = urlsplit(server_url)
     attributes: dict[str, str | int] = {
@@ -180,6 +195,16 @@ def inference(provider: str, operation: str, model: str, server_url: str) -> Gen
     if server.hostname:
         attributes["server.address"] = server.hostname
         attributes["server.port"] = server.port or (443 if server.scheme == "https" else 80)
+    capture = _capture_content(os.environ.get("OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT", "") or "NO_CONTENT")
+    details: dict[str, AnyValue] = {}
+    if any(capture):
+        # TypeSafe accepts structured state, not chat messages; keep its text in one user message.
+        details["gen_ai.input.messages"] = [
+            {
+                "role": "user",
+                "parts": [{"type": "text", "content": json.dumps({"context": context, "questions": questions})}],
+            }
+        ]
     with tracer.start_as_current_span(
         f"{operation} {model}",
         kind=trace.SpanKind.CLIENT,
@@ -187,10 +212,11 @@ def inference(provider: str, operation: str, model: str, server_url: str) -> Gen
         record_exception=False,
         set_status_on_exception=False,
     ) as span:
-        observed = Inference(span, attributes)
+        if capture[0]:
+            span.set_attributes(details)
         started = time.perf_counter()
         try:
-            yield observed
+            yield Inference(span, attributes, details, capture)
         except Exception as error:
             attributes["error.type"] = type(error).__qualname__
             span.set_attribute("error.type", attributes["error.type"])
@@ -198,3 +224,9 @@ def inference(provider: str, operation: str, model: str, server_url: str) -> Gen
             raise
         finally:
             inference_duration.record(time.perf_counter() - started, attributes)
+            if capture[1]:
+                events.emit(
+                    event_name="gen_ai.client.inference.operation.details",
+                    severity_number=SeverityNumber.DEBUG,
+                    attributes={**attributes, **details},
+                )

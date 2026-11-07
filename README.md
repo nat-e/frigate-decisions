@@ -157,7 +157,8 @@ Each span includes requested/actual models, server address, reported token count
 | `gen_ai.client.inference.usage.input_tokens` / `output_tokens` | Total token consumption, with modality `unknown` because TypeSafe reports combined counts |
 | `gen_ai.client.inference.operation.input_tokens` / `output_tokens` | Token distribution per call |
 
-Inputs and outputs are excluded by default. Set `OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT`
+GenAI message attributes are excluded by default; ordinary application logs still contain
+rule probabilities. Set `OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT`
 to `SPAN_ONLY`, `EVENT_ONLY` or `SPAN_AND_EVENT` to capture question text, camera context and
 answer probabilities in standard GenAI message attributes. `NO_CONTENT` is the default.
 Events use the logs pipeline. Camera images are excluded in every mode.
@@ -175,7 +176,7 @@ configuration. Question text, event IDs and probabilities are never metric attri
 | `frigate_decisions.watcher.errors` | Unexpected watcher errors by `error.type` |
 | `frigate_decisions.decisions` | Answers by `answer=yes` or `no`, using each rule's threshold |
 | `frigate_decisions.decision.probability` | Distribution of answer probabilities |
-| `frigate_decisions.rule.active` | 1 while a rule has an open event, 0 otherwise |
+| `frigate_decisions.rule.active` | Locally active rule events: 1 after a successful start, 0 after an end request |
 | `frigate_decisions.rule.events` | Successful event starts and local end requests, by `action=started` or `end_requested` |
 | `frigate_decisions.rule.event.duration` | First-to-last "yes" interval for each completed event, excluding video padding and the end delay |
 | `frigate_decisions.frigate.event.operations` | Create/end API attempts, including retries, by `operation` and `outcome` |
@@ -196,6 +197,7 @@ for authentication and ingestion-version headers.
 Langfuse maps the standard model and token usage span attributes. Send metrics and logs to
 a collector or another backend using their signal-specific endpoints, or disable those
 exporters. To send traces to several backends, route them through an OpenTelemetry Collector.
+Display of captured content depends on the backend's support for current GenAI message attributes.
 
 ## Writing good questions
 

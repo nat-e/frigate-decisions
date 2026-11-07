@@ -3,10 +3,11 @@ from collections.abc import Generator
 import httpx2
 import pytest
 from conftest import Telemetry
+from opentelemetry._logs import SeverityNumber
 from opentelemetry.sdk.metrics.export import Histogram, Sum
 from opentelemetry.trace import SpanKind, StatusCode
 from test_watcher import jpeg
-from typesafe_sdk import TypeSafeClient
+from typesafe_sdk import SystemOneResponse, TypeSafeClient, Usage
 
 from frigate_decisions.providers import Jev
 
@@ -99,6 +100,7 @@ def test_content_capture_modes(
     if on_event:
         record = logs[0].log_record
         assert record.event_name == "gen_ai.client.inference.operation.details"
+        assert record.severity_number == SeverityNumber.DEBUG
         assert record.trace_id == span.context.trace_id if span.context else False
         assert record.attributes is not None
         assert "Dog on sofa?" in str(record.attributes["gen_ai.input.messages"])
@@ -131,7 +133,8 @@ def test_unknown_token_usage_is_omitted(telemetry: Telemetry) -> None:
     from frigate_decisions.telemetry import inference
 
     with inference("typesafe", "system_one", "jev-test", "http://localhost:8080") as observed:
-        observed.response("jev-resolved", None, None, None, {"dog": "Dog?"}, {"dog": 0.5})
+        observed.response("jev-resolved", None, None)
+        observed.output({"dog": 0.5})
     (span,) = telemetry.spans.get_finished_spans()
     assert span.attributes is not None
     assert "gen_ai.usage.input_tokens" not in span.attributes
@@ -142,3 +145,48 @@ def test_unknown_token_usage_is_omitted(telemetry: Telemetry) -> None:
         if name.startswith("gen_ai.client.inference.operation."):
             assert isinstance(metric.data, Histogram)
             assert all(point.count == 0 for point in metric.data.data_points)
+
+
+def test_failed_call_captures_opted_in_inputs_without_inventing_output(
+    provider: Jev,
+    telemetry: Telemetry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT", "SPAN_AND_EVENT")
+
+    def fail(*args: object, **kwargs: object) -> None:
+        raise TimeoutError("request failed")
+
+    monkeypatch.setattr(provider.client, "system_one", fail)
+    with pytest.raises(TimeoutError):
+        _ = provider.ask(jpeg(100), "a room", {"dog": "Dog on sofa?"})
+    (span,) = telemetry.spans.get_finished_spans()
+    assert span.attributes is not None
+    assert "Dog on sofa?" in str(span.attributes["gen_ai.input.messages"])
+    assert "gen_ai.output.messages" not in span.attributes
+    (event,) = telemetry.logs.get_finished_logs()
+    assert event.log_record.attributes is not None
+    assert event.log_record.attributes["error.type"] == "TimeoutError"
+    assert "Dog on sofa?" in str(event.log_record.attributes["gen_ai.input.messages"])
+    assert "gen_ai.output.messages" not in event.log_record.attributes
+
+
+def test_incomplete_answers_preserve_reported_usage(
+    provider: Jev,
+    telemetry: Telemetry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def incomplete(*args: object, **kwargs: object) -> SystemOneResponse:
+        return SystemOneResponse(model="actual", usage=Usage(input_tokens=123, output_tokens=1), answers={})
+
+    monkeypatch.setattr(provider.client, "system_one", incomplete)
+    with pytest.raises(KeyError):
+        _ = provider.ask(jpeg(100), None, {"dog": "Dog?"})
+    (span,) = telemetry.spans.get_finished_spans()
+    assert span.attributes is not None
+    assert span.attributes["gen_ai.response.model"] == "actual"
+    assert span.attributes["gen_ai.usage.input_tokens"] == 123
+    assert span.attributes["error.type"] == "KeyError"
+    tokens = telemetry.collect()["gen_ai.client.inference.usage.input_tokens"].data
+    assert isinstance(tokens, Sum)
+    assert sum(point.value for point in tokens.data_points) == 123

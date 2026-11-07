@@ -39,7 +39,9 @@ class Jev:
         state: dict[str, Image | str] = {"frame": Image(self._fit(image))}
         if context:
             state["context"] = context
-        with inference("typesafe", "system_one", self.model, self.base_url) as observed:
+        with inference(
+            "typesafe", "system_one", self.model, self.base_url, context=context, questions=questions
+        ) as observed:
             # The SDK's types for JSON values are partly unknown
             result = self.client.system_one(  # pyright: ignore[reportUnknownMemberType]
                 state=state,
@@ -49,10 +51,9 @@ class Jev:
                 },
                 extra_headers={"TypeSafe-Danger-Zone-Images": "true"},  # image input is still experimental
             )
+            observed.response(result.model, result.usage.input_tokens, result.usage.output_tokens)
             answers = {name: result.nouls[name].noul for name in questions}
-            observed.response(
-                result.model, result.usage.input_tokens, result.usage.output_tokens, context, questions, answers
-            )
+            observed.output(answers)
             return answers
 
     def _fit(self, jpeg: bytes) -> bytes:

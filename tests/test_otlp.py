@@ -45,8 +45,9 @@ import logging
 from frigate_decisions.telemetry import inference
 
 logging.basicConfig(level=logging.INFO)
-with inference("typesafe", "system_one", "jev-test", "https://api.example.com") as observed:
-    observed.response("jev-resolved", 100, 4, None, {"dog": "Dog?"}, {"dog": 0.9})
+with inference("typesafe", "system_one", "jev-test", "https://api.example.com", questions={"dog": "Dog?"}) as observed:
+    observed.response("jev-resolved", 100, 4)
+    observed.output({"dog": 0.9})
     logging.getLogger("frigate_decisions").info("export smoke test")
 """)
     env = {key: value for key, value in os.environ.items() if not key.startswith("OTEL_")}
