@@ -65,7 +65,7 @@ with inference("typesafe", "system_one", "jev-test", "https://api.example.com", 
         )
         command = [sys.executable, str(script)]
         if launch:
-            command.insert(0, launcher)
+            command = [launcher, "--", *command]
         try:
             result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=20, check=False)
             assert result.returncode == 0, result.stderr
@@ -179,14 +179,14 @@ cameras:
             }
         )
         process = subprocess.Popen(
-            [launcher, "frigate-decisions", "--config", str(config)],
+            [launcher, "--", "frigate-decisions", "--config", str(config)],
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
         )
         try:
-            assert created.wait(timeout=10), "the CLI never created a Frigate event"
+            event_created = created.wait(timeout=10)
         finally:
             process.terminate()
             try:
@@ -198,6 +198,7 @@ cameras:
             finally:
                 server.shutdown()
                 worker.join()
+        assert event_created, stderr
         assert process.returncode == 0, stderr
 
     spans = [

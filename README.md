@@ -121,13 +121,13 @@ installation, install `frigate-decisions[otel]` or run `uv sync --extra otel` fr
 export OTEL_SERVICE_NAME=frigate-decisions
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318
 export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
-opentelemetry-instrument frigate-decisions --config config.yml
+opentelemetry-instrument -- frigate-decisions --config config.yml
 ```
 
 With Docker Compose, add this to the service's configuration:
 
 ```yaml
-command: [opentelemetry-instrument, frigate-decisions, --config, /config/config.yml]
+command: [opentelemetry-instrument, --, frigate-decisions, --config, /config/config.yml]
 environment:
   TYPESAFE_API_KEY: ${TYPESAFE_API_KEY}
   OTEL_SERVICE_NAME: frigate-decisions
