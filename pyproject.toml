@@ -10,6 +10,7 @@ dependencies = [
     "pillow>=11",
     "pyyaml>=6",
     "requests>=2.32",
+    "openai>=3.46.0,<4",
 ]
 
 [project.scripts]

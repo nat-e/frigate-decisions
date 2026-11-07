@@ -41,12 +41,30 @@ When nothing moves, it asks nothing, so it costs nothing.
 | Provider | `provider.name` | API key |
 | :- | :- | :- |
 | [TypeSafe Jev](https://docs.typesafe.ai) | `jev` | `TYPESAFE_API_KEY` |
+| [OpenAI Decisions](https://developers.openai.com/api/docs/guides/decisions) | `openai` | `OPENAI_API_KEY` |
 
 Jev costs $0.042 per million input tokens; one camera frame with a few questions is a couple of
 thousand tokens. Image input is still experimental at TypeSafe.
 
-Other providers (Cloudflare Clef-flash, OpenAI Decisions…) fit the same interface: a class with an
-`ask(image, context, questions)` method in [`providers.py`](src/frigate_decisions/providers.py).
+To use OpenAI Decisions, set the provider in your config:
+
+```yaml
+provider:
+  name: openai
+  model: gpt-6-luna # optional: this is the default for OpenAI
+```
+
+Pass `OPENAI_API_KEY` to the container instead of `TYPESAFE_API_KEY`:
+
+```yaml
+environment:
+  OPENAI_API_KEY: ${OPENAI_API_KEY}
+```
+
+OpenAI answers all the camera's questions in one request, with up to 400 questions per camera.
+If any question is refused, the whole frame is skipped and a warning is logged.
+
+To add another provider, see [CONTRIBUTING.md](CONTRIBUTING.md#adding-a-decision-model).
 
 ## Setup
 

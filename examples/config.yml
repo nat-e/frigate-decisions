@@ -6,6 +6,7 @@ frigate:
   url: http://frigate:5000 # Frigate's internal API, on the same Docker network
 
 provider:
+  # For OpenAI Decisions, use name: openai and model: gpt-6-luna, and set OPENAI_API_KEY.
   name: jev
   model: jev-1.14.0 # optional: pin the model version your thresholds were tuned with
 

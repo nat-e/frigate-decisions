@@ -3,6 +3,7 @@
 To add a provider, write a class with an `ask` method and add it to PROVIDERS.
 """
 
+import base64
 import io
 from typing import Protocol
 
@@ -59,7 +60,43 @@ class Jev:
         return out.getvalue()
 
 
-PROVIDERS = {"jev": Jev}
+class OpenAIDecisions:
+    """OpenAI Decisions. Reads the API key from OPENAI_API_KEY."""
+
+    def __init__(self, model: str | None = None):
+        from openai import OpenAI, OpenAIError
+
+        self.model: str = model or "gpt-6-luna"
+        try:
+            # Skip failed frames promptly; the watcher asks again with a fresh image.
+            self.client: OpenAI = OpenAI(timeout=20.0, max_retries=0)
+        except OpenAIError as e:
+            raise ValueError(str(e)) from e
+
+    def ask(self, image: bytes, context: str | None, questions: dict[str, str]) -> dict[str, float]:
+        from openai.types.decision_input_part_union_param import DecisionInputPartUnionParam
+
+        content: list[DecisionInputPartUnionParam] = []
+        if context:
+            content.append({"type": "input_text", "text": context})
+        encoded = base64.b64encode(image).decode("ascii")
+        content.append({"type": "input_image", "image_url": f"data:image/jpeg;base64,{encoded}"})
+        result = self.client.decisions.create(
+            model=self.model,
+            input=[{"role": "user", "content": content}],
+            questions=[{"type": "predicate", "name": name, "instructions": text} for name, text in questions.items()],
+        )
+        answers: dict[str, float] = {}
+        for name, answer in zip(questions, result.answers, strict=True):
+            if answer.type != "predicate":
+                raise ValueError(f"OpenAI returned {answer.type!r} for question {name!r}")
+            if answer.name != name or not 0 <= answer.probability <= 1:
+                raise ValueError(f"OpenAI returned an invalid answer for question {name!r}")
+            answers[name] = answer.probability
+        return answers
+
+
+PROVIDERS = {"jev": Jev, "openai": OpenAIDecisions}
 
 
 def make_provider(name: str, model: str | None) -> Provider:
