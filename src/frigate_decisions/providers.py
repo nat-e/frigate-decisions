@@ -4,9 +4,12 @@ To add a provider, write a class with an `ask` method and add it to PROVIDERS.
 """
 
 import io
+import os
 from typing import Protocol
 
 from PIL import Image as PILImage
+
+from .telemetry import inference
 
 
 class Provider(Protocol):
@@ -24,8 +27,11 @@ class Jev:
 
     def __init__(self, model: str | None = None):
         from typesafe_sdk import TypeSafeClient  # imported here: only needed when Jev is used
+        from typesafe_sdk.constants import DEFAULT_BASE_URL, DEFAULT_MODEL
 
-        self.client: TypeSafeClient = TypeSafeClient(model=model) if model else TypeSafeClient()
+        self.model: str = model or os.environ.get("TYPESAFE_DEFAULT_MODEL", "").strip() or DEFAULT_MODEL
+        self.base_url: str = os.environ.get("TYPESAFE_BASE_URL", "").strip() or DEFAULT_BASE_URL
+        self.client: TypeSafeClient = TypeSafeClient(model=self.model, base_url=self.base_url)
 
     def ask(self, image: bytes, context: str | None, questions: dict[str, str]) -> dict[str, float]:
         from typesafe_sdk import Image, Noul
@@ -33,16 +39,21 @@ class Jev:
         state: dict[str, Image | str] = {"frame": Image(self._fit(image))}
         if context:
             state["context"] = context
-        # The SDK's types for JSON values are partly unknown
-        result = self.client.system_one(  # pyright: ignore[reportUnknownMemberType]
-            state=state,
-            questions={
-                name: Noul(instructions=f"Looking at the camera image `frame`: {text}")
-                for name, text in questions.items()
-            },
-            extra_headers={"TypeSafe-Danger-Zone-Images": "true"},  # image input is still experimental
-        )
-        return {name: result.nouls[name].noul for name in questions}
+        with inference("typesafe", "system_one", self.model, self.base_url) as observed:
+            # The SDK's types for JSON values are partly unknown
+            result = self.client.system_one(  # pyright: ignore[reportUnknownMemberType]
+                state=state,
+                questions={
+                    name: Noul(instructions=f"Looking at the camera image `frame`: {text}")
+                    for name, text in questions.items()
+                },
+                extra_headers={"TypeSafe-Danger-Zone-Images": "true"},  # image input is still experimental
+            )
+            answers = {name: result.nouls[name].noul for name in questions}
+            observed.response(
+                result.model, result.usage.input_tokens, result.usage.output_tokens, context, questions, answers
+            )
+            return answers
 
     def _fit(self, jpeg: bytes) -> bytes:
         """Scale the image into the size range Jev accepts."""
