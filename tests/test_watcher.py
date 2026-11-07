@@ -2,7 +2,6 @@ import io
 from collections.abc import Iterator
 from typing import override
 
-import requests
 from conftest import Telemetry
 from opentelemetry.sdk.metrics.export import Histogram, Sum
 from PIL import Image
@@ -23,23 +22,17 @@ class FakeFrigate:
         self.created: list[tuple[str, str, str | None]] = []
         self.ended: list[str] = []
 
-    def latest_jpeg(self, camera: str) -> bytes:
+    def latest_jpeg(self, camera: str) -> bytes | None:
         return next(self.frames)
 
     def create_event(
-        self, camera: str, label: str, sub_label: str | None, score: float, pre_capture: float
+        self, camera: str, label: str, sub_label: str | None, score: float, start_time: float
     ) -> str | None:
         self.created.append((camera, label, sub_label))
         return f"evt{len(self.created)}"
 
     def end_event(self, event_id: str, end_time: float) -> None:
         self.ended.append(event_id)
-
-    def retry_ends(self) -> None:
-        pass
-
-    def end_leftover_events(self, camera: str, labels: set[str]) -> None:
-        pass
 
 
 class FakeProvider:
@@ -113,7 +106,7 @@ def test_failed_event_create_does_not_count_as_started(telemetry: Telemetry) -> 
             label: str,
             sub_label: str | None,
             score: float,
-            pre_capture: float,
+            start_time: float,
         ) -> str | None:
             return None
 
@@ -130,8 +123,8 @@ def test_failed_event_create_does_not_count_as_started(telemetry: Telemetry) -> 
 def test_frame_failure_still_ends_rule_and_reports_error(telemetry: Telemetry) -> None:
     class FailingFrigate(FakeFrigate):
         @override
-        def latest_jpeg(self, camera: str) -> bytes:
-            raise requests.Timeout("no frame")
+        def latest_jpeg(self, camera: str) -> bytes | None:
+            return None
 
     camera = Camera("test", (Rule("dog", "Dog?", end_after=1),))
     frigate = FailingFrigate([])
@@ -143,7 +136,7 @@ def test_frame_failure_still_ends_rule_and_reports_error(telemetry: Telemetry) -
     assert isinstance(data, Sum)
     point = next(point for point in data.data_points if point.value)
     assert point.value == 1
-    assert point.attributes == {"camera": "test", "outcome": "error", "error.type": "Timeout"}
+    assert point.attributes == {"camera": "test", "outcome": "error"}
 
 
 def test_stop_wakes_an_idle_watcher() -> None:

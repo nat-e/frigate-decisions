@@ -36,8 +36,8 @@ probability = meter.create_histogram(
     description="Probability of yes for each rule.",
     explicit_bucket_boundaries_advisory=(0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1),
 )
-rule_active = meter.create_gauge(
-    "frigate_decisions.rule.active", unit="1", description="Whether a rule has an open event."
+rule_active = meter.create_up_down_counter(
+    "frigate_decisions.rule.active", unit="{event}", description="Locally active rule events."
 )
 rule_events = meter.create_counter(
     "frigate_decisions.rule.events", unit="{event}", description="Rule event starts and end requests."
