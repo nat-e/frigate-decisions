@@ -13,6 +13,7 @@ from .providers import Provider
 from .rules import RuleState
 
 POLL_S = 1  # how often to grab a frame for the motion check
+QUESTION_PREFIX = "Looking at the camera image: "  # every provider gets the same wording
 
 log = logging.getLogger(__name__)
 
@@ -56,7 +57,7 @@ class Watcher(threading.Thread):
         self.frigate: FrigateAPI = frigate
         self.provider: Provider = provider
         self.rules: list[RuleState] = [RuleState(rule) for rule in camera.rules]
-        self.questions: dict[str, str] = {rule.name: rule.question for rule in camera.rules}
+        self.questions: dict[str, str] = {rule.name: QUESTION_PREFIX + rule.question for rule in camera.rules}
         self.motion: MotionCheck = MotionCheck()
         self.last_motion: float = float("-inf")
         self.last_ask: float = float("-inf")
@@ -97,7 +98,8 @@ class Watcher(threading.Thread):
 
     def ask(self, jpeg: bytes, now: float) -> None:
         try:
-            answers = self.provider.ask(jpeg, self.camera.context, self.questions)
+            image = fit(jpeg, *self.provider.image_sides)
+            answers = self.provider.ask(image, self.camera.context, self.questions)
         except Exception as e:  # noqa: BLE001 any network or API error: skip this frame
             log.warning("%s: decision model failed: %s", self.camera.name, e)
             return
@@ -105,6 +107,9 @@ class Watcher(threading.Thread):
 
         for state in self.rules:
             rule = state.rule
+            if rule.name not in answers:
+                log.warning("%s: no answer for %s", self.camera.name, rule.name)
+                continue
             if not (start := state.answer(answers[rule.name], now)):
                 continue
             event_id = self.frigate.create_event(
@@ -113,3 +118,18 @@ class Watcher(threading.Thread):
             if event_id:  # otherwise the next "yes" tries again
                 state.started(event_id)
                 log.info("%s: %s started: event %s", self.camera.name, rule.name, event_id)
+
+
+def fit(jpeg: bytes, min_side: int, max_side: int) -> bytes:
+    """Scale the JPEG so its sides are between `min_side` and `max_side` pixels, keeping its shape."""
+    img = Image.open(io.BytesIO(jpeg))
+    scale = min(1.0, max_side / max(img.size))
+    scale = max(scale, min_side / min(img.size))
+    if scale == 1.0:
+        return jpeg
+    out = io.BytesIO()
+    size = (round(img.width * scale), round(img.height * scale))
+    # Pillow's type for `size` includes numpy arrays, unknown without numpy installed
+    resized = img.convert("RGB").resize(size)  # pyright: ignore[reportUnknownMemberType]
+    resized.save(out, "JPEG", quality=90)
+    return out.getvalue()
