@@ -2,8 +2,9 @@ import io
 from collections.abc import Iterator, Sequence
 from typing import override
 
+import pytest
 from conftest import Telemetry
-from opentelemetry.sdk.metrics.export import Histogram, Sum
+from opentelemetry.sdk.metrics.export import Gauge, Histogram, Sum
 from PIL import Image
 
 from frigate_decisions.config import Camera, Rule
@@ -21,6 +22,7 @@ class FakeFrigate:
         self.frames: Iterator[bytes] = iter(frames)
         self.created: list[tuple[str, str, str | None]] = []
         self.ended: list[str] = []
+        self.retries: int = 0
 
     def latest_jpeg(self, camera: str) -> bytes | None:
         return next(self.frames)
@@ -33,6 +35,9 @@ class FakeFrigate:
 
     def end_event(self, event_id: str, end_time: float) -> None:
         self.ended.append(event_id)
+
+    def retry_ends(self) -> None:
+        self.retries += 1
 
 
 class FakeProvider:
@@ -153,6 +158,40 @@ def test_stop_wakes_an_idle_watcher() -> None:
     watcher.stop()
     watcher.join(timeout=2)
     assert not watcher.is_alive()
+
+
+def test_stop_ends_the_open_event() -> None:
+    frigate = FakeFrigate([])
+    watcher = Watcher(CAMERA, frigate, FakeProvider([0.9, 0.9, 0.9]))
+    for now in (0, 2, 4):
+        watcher.ask(jpeg(100), now)
+    assert frigate.created
+    watcher.start()
+    watcher.stop()
+    watcher.join(timeout=2)
+    assert frigate.ended == ["evt1"]
+
+
+def test_stop_without_open_events_retries_queued_ends() -> None:
+    frigate = FakeFrigate([])
+    watcher = Watcher(CAMERA, frigate, FakeProvider([]))
+    watcher.start()
+    watcher.stop()
+    watcher.join(timeout=2)
+    assert (frigate.ended, frigate.retries) == ([], 1)
+
+
+def test_failed_step_still_reports_camera_activity(telemetry: Telemetry) -> None:
+    frigate = FakeFrigate([jpeg(100), b"not a JPEG"])
+    watcher = Watcher(CAMERA, frigate, FakeProvider([]))
+    watcher.step(0)
+    watcher.active = True
+    with pytest.raises(OSError):
+        watcher.step(1)
+    data = telemetry.collect()["frigate_decisions.camera.active"].data
+    assert isinstance(data, Gauge)
+    point = next(point for point in data.data_points if point.attributes == {"camera": "living_room"})
+    assert point.value == 1
 
 
 def test_refusal_is_counted_without_fabricating_a_probability(telemetry: Telemetry) -> None:

@@ -1,3 +1,4 @@
+import json
 from collections.abc import Generator
 
 import httpx2
@@ -15,7 +16,7 @@ from frigate_decisions.providers import Jev
 @pytest.fixture
 def provider(monkeypatch: pytest.MonkeyPatch) -> Generator[Jev]:
     monkeypatch.setenv("TYPESAFE_API_KEY", "test-key")
-    monkeypatch.delenv("OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT", raising=False)
+    monkeypatch.delenv("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", raising=False)
     monkeypatch.delenv("TYPESAFE_BASE_URL", raising=False)
     jev = Jev("jev-test")
     jev.client.close()
@@ -86,7 +87,7 @@ def test_content_capture_modes(
     on_span: bool,
     on_event: bool,
 ) -> None:
-    monkeypatch.setenv("OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT", mode)
+    monkeypatch.setenv("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", mode)
     _ = provider.ask(jpeg(100), "a room", {"dog": "Dog on sofa?"})
     (span,) = telemetry.spans.get_finished_spans()
     assert span.attributes is not None
@@ -94,7 +95,10 @@ def test_content_capture_modes(
     if on_span:
         assert "Dog on sofa?" in str(span.attributes["gen_ai.input.messages"])
         assert "0.9" in str(span.attributes["gen_ai.output.messages"])
-        assert isinstance(span.attributes["gen_ai.input.messages"], (list, tuple))
+        for key, role in (("gen_ai.input.messages", "user"), ("gen_ai.output.messages", "assistant")):
+            value = span.attributes[key]
+            assert isinstance(value, str)  # spans take JSON strings, events structured values
+            assert json.loads(value)[0]["role"] == role
     logs = telemetry.logs.get_finished_logs()
     assert bool(logs) == on_event
     if on_event:
@@ -152,7 +156,7 @@ def test_failed_call_captures_opted_in_inputs_without_inventing_output(
     telemetry: Telemetry,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT", "SPAN_AND_EVENT")
+    monkeypatch.setenv("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "SPAN_AND_EVENT")
 
     def fail(*args: object, **kwargs: object) -> None:
         raise TimeoutError("request failed")

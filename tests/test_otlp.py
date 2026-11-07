@@ -1,5 +1,6 @@
 """Exercise the documented launcher against a local OTLP/HTTP receiver."""
 
+import json
 import os
 import shutil
 import subprocess
@@ -59,7 +60,7 @@ with inference("typesafe", "system_one", "jev-test", "https://api.example.com", 
                 "OTEL_SERVICE_NAME": "frigate-decisions-test",
                 "OTEL_EXPORTER_OTLP_ENDPOINT": f"http://127.0.0.1:{server.server_port}",
                 "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
-                "OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT": "SPAN_AND_EVENT",
+                "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "SPAN_AND_EVENT",
                 "OTEL_SDK_DISABLED": str(disabled).lower(),
             }
         )
@@ -84,7 +85,7 @@ with inference("typesafe", "system_one", "jev-test", "https://api.example.com", 
     inference_span = next(span for span in spans if span.name == "system_one jev-test")
     attrs = {attr.key: attr.value for attr in inference_span.attributes}
     assert attrs["gen_ai.usage.input_tokens"].int_value == 100
-    assert attrs["gen_ai.input.messages"].array_value.values[0].kvlist_value.values
+    assert json.loads(attrs["gen_ai.input.messages"].string_value)[0]["role"] == "user"
 
     metrics = [ExportMetricsServiceRequest.FromString(payload) for payload in received["/v1/metrics"]]
     names = {

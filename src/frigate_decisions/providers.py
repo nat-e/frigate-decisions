@@ -30,11 +30,8 @@ class Jev:
 
     def __init__(self, model: str | None = None):
         from typesafe_sdk import TypeSafeClient  # imported here: only needed when Jev is used
-        from typesafe_sdk.constants import DEFAULT_BASE_URL, DEFAULT_MODEL
 
-        self.model: str = model or os.environ.get("TYPESAFE_DEFAULT_MODEL", "").strip() or DEFAULT_MODEL
-        self.base_url: str = os.environ.get("TYPESAFE_BASE_URL", "").strip() or DEFAULT_BASE_URL
-        self.client: TypeSafeClient = TypeSafeClient(model=self.model, base_url=self.base_url)
+        self.client: TypeSafeClient = TypeSafeClient(model=model)
 
     def ask(self, image: bytes, context: str | None, questions: dict[str, str]) -> dict[str, float]:
         from typesafe_sdk import Image, Noul
@@ -42,8 +39,10 @@ class Jev:
         state: dict[str, Image | str] = {"frame": Image(image)}
         if context:
             state["context"] = context
+        # The SDK resolves the model and URL from its arguments and environment, and exposes them only here
+        config = self.client._config  # pyright: ignore[reportPrivateUsage]
         with inference(
-            "typesafe", "system_one", self.model, self.base_url, context=context, questions=questions
+            "typesafe", "system_one", config.default_model, config.base_url, context=context, questions=questions
         ) as observed:
             # The SDK's types for JSON values are partly unknown
             result = self.client.system_one(  # pyright: ignore[reportUnknownMemberType]

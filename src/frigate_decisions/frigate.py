@@ -41,7 +41,7 @@ class Frigate:
 
         Each call also retries the ends Frigate hasn't accepted yet.
         """
-        self._retry_ends()
+        self.retry_ends()
         try:
             r = self.http.get(f"{self.url}/api/{camera}/latest.jpg", params={"quality": 90}, timeout=10)
             r.raise_for_status()
@@ -78,9 +78,10 @@ class Frigate:
         """End the event, now or, if Frigate doesn't accept it, on a later latest_jpeg()."""
         self._pending_ends.append((event_id, end_time))
         telemetry.pending_ends.add(1)
-        self._retry_ends()
+        self.retry_ends()
 
-    def _retry_ends(self) -> None:
+    def retry_ends(self) -> None:
+        """Try again to end the events Frigate didn't accept yet."""
         pending, self._pending_ends = self._pending_ends, []
         for event_id, end_time in pending:
             try:

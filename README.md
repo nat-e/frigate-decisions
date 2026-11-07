@@ -178,7 +178,7 @@ Each span includes requested/actual models, server address, reported token count
 | `gen_ai.client.inference.operation.input_tokens` / `output_tokens` | Token distribution per call |
 
 GenAI message attributes are excluded by default; ordinary application logs still contain
-rule probabilities. Set `OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT`
+rule probabilities. Set `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`
 to `SPAN_ONLY`, `EVENT_ONLY` or `SPAN_AND_EVENT` to capture question text, camera context and
 answer probabilities in standard GenAI message attributes. `NO_CONTENT` is the default.
 Events use the logs pipeline. Camera images are excluded in every mode.
@@ -204,7 +204,9 @@ configuration. Question text, event IDs and probabilities are never metric attri
 
 Event end requests and Frigate confirmations are separate: an end can remain queued while
 Frigate is unavailable. A non-retryable HTTP 4xx end response has `outcome=discarded`.
-SIGTERM or Ctrl+C finishes the current poll before stopping, allowing the SDK to flush.
+SIGTERM or Ctrl+C ends open events and stops within 5 seconds, allowing the SDK to flush.
+A camera still waiting for its model after 5 seconds stops without ending its event; the next
+start ends it. A second SIGTERM or Ctrl+C stops at once.
 
 ### Langfuse and other backends
 

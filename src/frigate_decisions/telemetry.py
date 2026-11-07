@@ -59,26 +59,15 @@ pending_ends = meter.create_up_down_counter(
     description="Event end requests awaiting a retry.",
 )
 
+# Bucket boundaries recommended by the GenAI conventions
+DURATION_BUCKETS = tuple(0.01 * 2**i for i in range(14))  # 0.01 s to 81.92 s
+TOKEN_BUCKETS = tuple(4**i for i in range(14))  # 1 to 67,108,864 tokens
+
 inference_duration = meter.create_histogram(
     "gen_ai.client.inference.duration",
     unit="s",
     description="GenAI client inference operation duration, including retries.",
-    explicit_bucket_boundaries_advisory=(
-        0.01,
-        0.02,
-        0.04,
-        0.08,
-        0.16,
-        0.32,
-        0.64,
-        1.28,
-        2.56,
-        5.12,
-        10.24,
-        20.48,
-        40.96,
-        81.92,
-    ),
+    explicit_bucket_boundaries_advisory=DURATION_BUCKETS,
 )
 input_tokens = meter.create_counter("gen_ai.client.inference.usage.input_tokens", unit="{token}")
 output_tokens = meter.create_counter("gen_ai.client.inference.usage.output_tokens", unit="{token}")
@@ -86,45 +75,14 @@ cache_read_tokens = meter.create_counter("gen_ai.client.inference.usage.cache_re
 cache_write_tokens = meter.create_counter("gen_ai.client.inference.usage.cache_write.input_tokens", unit="{token}")
 reasoning_tokens = meter.create_counter("gen_ai.client.inference.usage.reasoning.output_tokens", unit="{token}")
 input_tokens_per_call = meter.create_histogram(
-    "gen_ai.client.inference.operation.input_tokens",
-    unit="{token}",
-    explicit_bucket_boundaries_advisory=(
-        1,
-        4,
-        16,
-        64,
-        256,
-        1024,
-        4096,
-        16384,
-        65536,
-        262144,
-        1048576,
-        4194304,
-        16777216,
-        67108864,
-    ),
+    "gen_ai.client.inference.operation.input_tokens", unit="{token}", explicit_bucket_boundaries_advisory=TOKEN_BUCKETS
 )
 output_tokens_per_call = meter.create_histogram(
-    "gen_ai.client.inference.operation.output_tokens",
-    unit="{token}",
-    explicit_bucket_boundaries_advisory=(
-        1,
-        4,
-        16,
-        64,
-        256,
-        1024,
-        4096,
-        16384,
-        65536,
-        262144,
-        1048576,
-        4194304,
-        16777216,
-        67108864,
-    ),
+    "gen_ai.client.inference.operation.output_tokens", unit="{token}", explicit_bucket_boundaries_advisory=TOKEN_BUCKETS
 )
+
+
+CAPTURE_CONTENT_ENV = "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"  # same name as opentelemetry-util-genai
 
 
 @cache
@@ -136,7 +94,7 @@ def _capture_content(value: str) -> tuple[bool, bool]:
         "SPAN_AND_EVENT": (True, True),
     }
     if value.upper() not in modes:
-        logging.getLogger(__name__).warning("Unknown OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT; using NO_CONTENT")
+        logging.getLogger(__name__).warning("Unknown %s; using NO_CONTENT", CAPTURE_CONTENT_ENV)
     return modes.get(value.upper(), (False, False))
 
 
@@ -177,26 +135,24 @@ class Inference:
                 histogram.record(count, self._attributes)
                 if count > 0:
                     counter.add(count, {**self._attributes, "gen_ai.token.modality": "unknown"})
-        for suffix, count, counter in (
-            ("cache_read.input_tokens", cache_read_count, cache_read_tokens),
-            ("cache_write.input_tokens", cache_write_count, cache_write_tokens),
-            ("reasoning.output_tokens", reasoning_count, reasoning_tokens),
+        for suffix, count, counter, has_modality in (
+            ("cache_read.input_tokens", cache_read_count, cache_read_tokens, True),
+            ("cache_write.input_tokens", cache_write_count, cache_write_tokens, True),
+            ("reasoning.output_tokens", reasoning_count, reasoning_tokens, False),
         ):
             if count is not None and count > 0:
                 key = f"gen_ai.usage.{suffix}"
                 self._span.set_attribute(key, count)
                 self._details[key] = count
-                token_attributes = dict(self._attributes)
-                if counter is not reasoning_tokens:
-                    token_attributes["gen_ai.token.modality"] = "unknown"
-                counter.add(count, token_attributes)
+                modality = {"gen_ai.token.modality": "unknown"} if has_modality else {}
+                counter.add(count, {**self._attributes, **modality})
 
     def output(self, answers: dict[str, float]) -> None:
         if any(self._capture):
             messages: AnyValue = [{"role": "assistant", "parts": [{"type": "text", "content": json.dumps(answers)}]}]
             self._details["gen_ai.output.messages"] = messages
             if self._capture[0]:
-                self._span.set_attribute("gen_ai.output.messages", messages)
+                self._span.set_attribute("gen_ai.output.messages", json.dumps(messages))
 
 
 @contextmanager
@@ -220,7 +176,7 @@ def inference(
     if server.hostname:
         attributes["server.address"] = server.hostname
         attributes["server.port"] = server.port or (443 if server.scheme == "https" else 80)
-    capture = _capture_content(os.environ.get("OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT", "") or "NO_CONTENT")
+    capture = _capture_content(os.environ.get(CAPTURE_CONTENT_ENV, "") or "NO_CONTENT")
     details: dict[str, AnyValue] = {}
     if any(capture):
         # Decision APIs accept named questions; keep their text in one user message.
@@ -237,8 +193,8 @@ def inference(
         record_exception=False,
         set_status_on_exception=False,
     ) as span:
-        if capture[0]:
-            span.set_attributes(details)
+        if capture[0]:  # spans take messages as a JSON string, events as structured values
+            span.set_attribute("gen_ai.input.messages", json.dumps(details["gen_ai.input.messages"]))
         started = time.perf_counter()
         try:
             yield Inference(span, attributes, details, capture)
