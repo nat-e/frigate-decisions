@@ -128,5 +128,6 @@ def test_openai_api_error_propagates_without_retry(api: FakeOpenAI, status: int,
 
 def test_openai_missing_key_is_a_config_error(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_ADMIN_KEY", raising=False)
     with pytest.raises(ValueError, match="OPENAI_API_KEY"):
         _ = OpenAIDecisions()
