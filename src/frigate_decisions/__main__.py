@@ -2,7 +2,10 @@
 
 import argparse
 import logging
+import signal
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import cast
 
@@ -11,6 +14,9 @@ from .config import Config, ConfigError, load
 from .frigate import Frigate
 from .providers import Provider, make_provider
 from .watcher import Watcher
+
+# Leaves time to flush telemetry within Docker's 10 s stop grace period
+STOP_TIMEOUT_S = 5
 
 
 def main() -> None:
@@ -34,10 +40,26 @@ def main() -> None:
         frigate = Frigate(config.frigate.url)
         frigate.end_leftover_events(camera.name, {rule.label for rule in camera.rules})
         watchers.append(Watcher(camera, frigate, provider))
+
+    stopping = threading.Event()
+
+    def stop(_signum: int, _frame: object) -> None:
+        stopping.set()
+        # A second signal stops at once
+        _ = signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        _ = signal.signal(signal.SIGINT, signal.default_int_handler)
+
+    _ = signal.signal(signal.SIGTERM, stop)
+    _ = signal.signal(signal.SIGINT, stop)
     for watcher in watchers:
         watcher.start()
+    _ = stopping.wait()
     for watcher in watchers:
-        watcher.join()
+        watcher.stop()
+    # Watchers in a model call may not stop in time; they are daemon threads and end with the process.
+    deadline = time.monotonic() + STOP_TIMEOUT_S
+    for watcher in watchers:
+        watcher.join(max(0.0, deadline - time.monotonic()))
 
 
 def check_question_limit(config: Config, provider: Provider) -> None:

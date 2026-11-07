@@ -129,6 +129,98 @@ cameras:
         sub_label: <optional Frigate sub label>
 ```
 
+## OpenTelemetry
+
+Telemetry is opt-in. The app uses the OpenTelemetry API; the official Python launcher
+configures the SDK and exporters. The Docker image includes the launcher. For a Python
+installation, install `frigate-decisions[otel]` or run `uv sync --extra otel` from this repo.
+
+```sh
+export OTEL_SERVICE_NAME=frigate-decisions
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+opentelemetry-instrument -- frigate-decisions --config config.yml
+```
+
+With Docker Compose, add this to the service's configuration:
+
+```yaml
+command: [opentelemetry-instrument, --, frigate-decisions, --config, /config/config.yml]
+environment:
+  TYPESAFE_API_KEY: ${TYPESAFE_API_KEY}
+  OTEL_SERVICE_NAME: frigate-decisions
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://collector:4318
+  OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+```
+
+The launcher exports traces, metrics and Python logs. It also instruments Frigate HTTP
+requests and collects process/system metrics. Configure endpoints, authentication, TLS,
+resource attributes, sampling and export intervals with the standard
+[`OTEL_*` settings](https://opentelemetry.io/docs/zero-code/python/configuration/).
+Set `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` or `OTEL_LOGS_EXPORTER` to `none` to
+disable a signal; `OTEL_SDK_DISABLED=true` disables all telemetry. Running the app without
+the launcher leaves its API instrumentation inactive unless another OTel agent configures it.
+
+### GenAI telemetry
+
+Model calls follow the [OTel GenAI inference conventions](https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/client-inference.md),
+which are in development. TypeSafe calls use `gen_ai.provider.name=typesafe` and
+`gen_ai.operation.name=system_one`; OpenAI calls use `openai` and `decisions`.
+These APIs answer structured questions rather than chat messages.
+Each span includes requested/actual models, server address, reported token counts and
+`error.type` on failure. A call includes the SDK's retries; missing token counts stay absent.
+
+| Metric | Meaning |
+| :- | :- |
+| `gen_ai.client.inference.duration` | Call duration in seconds; its count gives the number of calls, split by `error.type` for failures |
+| `gen_ai.client.inference.usage.input_tokens` / `output_tokens` | Total token consumption, with modality `unknown` when the provider reports combined counts |
+| `gen_ai.client.inference.usage.cache_read.input_tokens` / `cache_write.input_tokens` / `reasoning.output_tokens` | Reported cache/reasoning subsets; these are already included in input/output totals |
+| `gen_ai.client.inference.operation.input_tokens` / `output_tokens` | Token distribution per call |
+
+GenAI message attributes are excluded by default; ordinary application logs still contain
+rule probabilities. Set `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`
+to `SPAN_ONLY`, `EVENT_ONLY` or `SPAN_AND_EVENT` to capture question text, camera context and
+answer probabilities in standard GenAI message attributes. `NO_CONTENT` is the default.
+Events use the logs pipeline. Camera images are excluded in every mode.
+
+### Camera and rule metrics
+
+Camera metrics use a `camera` attribute; rule metrics also use `rule`. Names come from the
+configuration. Question text, event IDs and probabilities are never metric attributes.
+
+| Metric | Meaning |
+| :- | :- |
+| `frigate_decisions.frames` | Frame fetch attempts, with `outcome=success` or `error` |
+| `frigate_decisions.camera.last_frame` | Unix timestamp of the last fetched frame; use it to detect a stalled camera |
+| `frigate_decisions.camera.active` | 1 while asking, 0 while idle |
+| `frigate_decisions.watcher.errors` | Unexpected watcher errors by `error.type` |
+| `frigate_decisions.decisions` | Answers by `answer=yes` or `no`, using each rule's threshold; omitted/refused answers use `unanswered` |
+| `frigate_decisions.decision.probability` | Distribution of answer probabilities |
+| `frigate_decisions.rule.active` | Locally active rule events: 1 after a successful start, 0 after an end request |
+| `frigate_decisions.rule.events` | Successful event starts and local end requests, by `action=started` or `end_requested` |
+| `frigate_decisions.rule.event.duration` | First-to-last "yes" interval for each completed event, excluding video padding and the end delay |
+| `frigate_decisions.frigate.event.operations` | Create/end API attempts, including retries, by `operation` and `outcome` |
+| `frigate_decisions.frigate.event.pending_ends` | Number of event end requests awaiting a retry |
+
+Event end requests and Frigate confirmations are separate: an end can remain queued while
+Frigate is unavailable. A non-retryable HTTP 4xx end response has `outcome=discarded`.
+SIGTERM or Ctrl+C ends open events and stops within 5 seconds, allowing the SDK to flush.
+A camera still waiting for its model after 5 seconds stops without ending its event; the next
+start ends it. A second SIGTERM or Ctrl+C stops at once.
+
+### Langfuse and other backends
+
+Any compatible OTLP backend can receive the telemetry. For Langfuse, use `http/protobuf`,
+set `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` to your Langfuse URL followed by
+`/api/public/otel/v1/traces`, and configure `OTEL_EXPORTER_OTLP_TRACES_HEADERS` with its
+authentication headers. See [Langfuse's OTel setup](https://langfuse.com/integrations/native/opentelemetry)
+for authentication and ingestion-version headers.
+
+Langfuse maps the standard model and token usage span attributes. Send metrics and logs to
+a collector or another backend using their signal-specific endpoints, or disable those
+exporters. To send traces to several backends, route them through an OpenTelemetry Collector.
+Display of captured content depends on the backend's support for current GenAI message attributes.
+
 ## Writing good questions
 
 - Ask about one thing you can see in a single frame: *Is a dog on the sofa?*, not *Did the dog

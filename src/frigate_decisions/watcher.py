@@ -6,8 +6,10 @@ import threading
 import time
 from typing import Protocol, override
 
+from opentelemetry.trace import StatusCode
 from PIL import Image, ImageChops, ImageFilter
 
+from . import telemetry
 from .config import Camera
 from .providers import Provider
 from .rules import RuleState
@@ -28,6 +30,8 @@ class FrigateAPI(Protocol):
     ) -> str | None: ...
 
     def end_event(self, event_id: str, end_time: float) -> None: ...
+
+    def retry_ends(self) -> None: ...
 
 
 class MotionCheck:
@@ -56,27 +60,53 @@ class Watcher(threading.Thread):
         self.camera: Camera = camera
         self.frigate: FrigateAPI = frigate
         self.provider: Provider = provider
-        self.rules: list[RuleState] = [RuleState(rule) for rule in camera.rules]
+        self.rules: list[RuleState] = [RuleState(rule, camera.name) for rule in camera.rules]
         self.questions: dict[str, str] = {rule.name: QUESTION_PREFIX + rule.question for rule in camera.rules}
         self.motion: MotionCheck = MotionCheck()
         self.last_motion: float = float("-inf")
         self.last_ask: float = float("-inf")
         self.active: bool = False
+        self._stopping: threading.Event = threading.Event()
+
+    def stop(self) -> None:
+        """Finish the current poll, end the open events and stop."""
+        self._stopping.set()
 
     @override
     def run(self) -> None:
         log.info("%s: watching, %d rule(s)", self.camera.name, len(self.rules))
-        while True:
-            time.sleep(POLL_S)
+        while not self._stopping.wait(POLL_S):
             try:
                 self.step(time.time())
-            except Exception:  # keep watching whatever happens
+            except Exception as error:  # keep watching whatever happens
+                telemetry.watcher_errors.add(1, {"camera": self.camera.name, "error.type": type(error).__qualname__})
                 log.exception("%s: unexpected error", self.camera.name)
+        try:
+            self.finish(time.time())
+        except Exception:
+            log.exception("%s: can't end the open events", self.camera.name)
+
+    def finish(self, now: float) -> None:
+        """End the open events, and retry the ends Frigate hasn't accepted yet."""
+        ends = [end for state in self.rules if (end := state.finish(now))]
+        for end in ends:
+            log.info("%s: ending event %s on shutdown", self.camera.name, end.event_id)
+            self.frigate.end_event(end.event_id, end.end_time)  # also retries the earlier ends
+        if not ends:
+            self.frigate.retry_ends()
 
     def step(self, now: float) -> None:
+        try:
+            self._step(now)
+        finally:
+            telemetry.camera_active.set(int(self.active), {"camera": self.camera.name})
+
+    def _step(self, now: float) -> None:
         cam = self.camera
         jpeg = self.frigate.latest_jpeg(cam.name)
+        telemetry.frames.add(1, {"camera": cam.name, "outcome": "success" if jpeg is not None else "error"})
         if jpeg is not None:
+            telemetry.last_frame.set(now, {"camera": cam.name})
             moved = self.motion.changed(jpeg)
             if moved >= cam.motion_threshold:
                 self.last_motion = now
@@ -97,27 +127,36 @@ class Watcher(threading.Thread):
                 self.frigate.end_event(end.event_id, end.end_time)
 
     def ask(self, jpeg: bytes, now: float) -> None:
-        try:
-            image = fit(jpeg, *self.provider.image_sides)
-            answers = self.provider.ask(image, self.camera.context, self.questions)
-        except Exception as e:  # noqa: BLE001 any network or API error: skip this frame
-            log.warning("%s: decision model failed: %s", self.camera.name, e)
-            return
-        log.info("%s: %s", self.camera.name, " ".join(f"{k}={v:.2f}" for k, v in answers.items()))
+        with telemetry.tracer.start_as_current_span(
+            "frigate_decisions.decide",
+            attributes={"camera": self.camera.name},
+            record_exception=False,
+            set_status_on_exception=False,
+        ) as span:
+            try:
+                image = fit(jpeg, *self.provider.image_sides)
+                answers = self.provider.ask(image, self.camera.context, self.questions)
+            except Exception as e:  # noqa: BLE001 any network or API error: skip this frame
+                span.set_attribute("error.type", type(e).__qualname__)
+                span.set_status(StatusCode.ERROR)
+                log.warning("%s: decision model failed: %s", self.camera.name, e)
+                return
+            log.info("%s: %s", self.camera.name, " ".join(f"{k}={v:.2f}" for k, v in answers.items()))
 
-        for state in self.rules:
-            rule = state.rule
-            if rule.name not in answers:
-                log.warning("%s: no answer for %s", self.camera.name, rule.name)
-                continue
-            if not (start := state.answer(answers[rule.name], now)):
-                continue
-            event_id = self.frigate.create_event(
-                self.camera.name, rule.label, rule.sub_label, start.score, start.start_time
-            )
-            if event_id:  # otherwise the next "yes" tries again
-                state.started(event_id)
-                log.info("%s: %s started: event %s", self.camera.name, rule.name, event_id)
+            for state in self.rules:
+                rule = state.rule
+                if rule.name not in answers:
+                    telemetry.decisions.add(1, {"camera": self.camera.name, "rule": rule.name, "answer": "unanswered"})
+                    log.warning("%s: no answer for %s", self.camera.name, rule.name)
+                    continue
+                if not (start := state.answer(answers[rule.name], now)):
+                    continue
+                event_id = self.frigate.create_event(
+                    self.camera.name, rule.label, rule.sub_label, start.score, start.start_time
+                )
+                if event_id:  # otherwise the next "yes" tries again
+                    state.started(event_id)
+                    log.info("%s: %s started: event %s", self.camera.name, rule.name, event_id)
 
 
 def fit(jpeg: bytes, min_side: int, max_side: int) -> bytes:

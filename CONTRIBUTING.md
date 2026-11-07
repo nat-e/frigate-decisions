@@ -9,7 +9,7 @@ Open a [GitHub issue](https://github.com/nat-e/frigate-decisions/issues), with t
 Install [uv](https://docs.astral.sh/uv/), then:
 
 ```sh
-uv sync                                       # install, with the dev tools
+uv sync --extra otel                          # install, with telemetry and dev tools
 uv run frigate-decisions --config config.yml  # run it outside Docker
 ```
 

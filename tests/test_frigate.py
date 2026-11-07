@@ -4,6 +4,8 @@ import time
 from typing import cast, override
 
 import requests
+from conftest import Telemetry
+from opentelemetry.sdk.metrics.export import Sum
 from requests.adapters import BaseAdapter
 
 from frigate_decisions.frigate import Frigate
@@ -70,3 +72,26 @@ def test_the_event_start_is_sent_relative_to_now() -> None:
     server = FakeServer(200)
     assert client(server).create_event("door", "parcel", None, 0.9, start_time=time.time() - 12) == "evt"
     assert json.loads(cast("bytes", server.requests[0].body))["pre_capture"] == 12
+
+
+def test_event_end_retry_keeps_pending_count_until_settled(telemetry: Telemetry) -> None:
+    server = FakeServer(503, 200, 200, 404)
+    frigate = client(server)
+    frigate.end_event("first", 10)
+    pending = telemetry.collect()["frigate_decisions.frigate.event.pending_ends"].data
+    assert isinstance(pending, Sum)
+    assert pending.data_points[0].value == 1
+    _ = frigate.latest_jpeg("door")
+    frigate.end_event("second", 20)
+    collected = telemetry.collect()
+    pending = collected["frigate_decisions.frigate.event.pending_ends"].data
+    assert isinstance(pending, Sum)
+    assert pending.data_points[0].value == 0
+    operations = collected["frigate_decisions.frigate.event.operations"].data
+    assert isinstance(operations, Sum)
+    assert {
+        point.attributes["outcome"]: point.value for point in operations.data_points if point.attributes and point.value
+    } == {
+        "success": 1,
+        "discarded": 1,
+    }

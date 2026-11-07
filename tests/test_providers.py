@@ -6,8 +6,11 @@ from typing import cast
 
 import httpx2
 import pytest
+from conftest import Telemetry
 from openai import AuthenticationError, InternalServerError
 from openai import OpenAI as SDKOpenAI
+from opentelemetry.sdk.metrics.export import Histogram, Sum
+from opentelemetry.trace import StatusCode
 
 from frigate_decisions.providers import OpenAIDecisions, make_provider
 
@@ -141,3 +144,43 @@ def test_openai_missing_key_is_a_config_error(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv("OPENAI_ADMIN_KEY", "admin-key")  # the SDK accepts this alone, but decisions need an API key
     with pytest.raises(ValueError, match="OPENAI_API_KEY"):
         _ = OpenAIDecisions()
+
+
+def test_openai_genai_span_and_usage(api: FakeOpenAI, telemetry: Telemetry) -> None:
+    _ = make_provider("openai", None).ask(b"JPEG", None, QUESTIONS)
+    (span,) = telemetry.spans.get_finished_spans()
+    assert span.name == "decisions gpt-6-luna"
+    assert span.attributes is not None
+    assert span.attributes["gen_ai.provider.name"] == "openai"
+    assert span.attributes["gen_ai.request.model"] == "gpt-6-luna"
+    assert span.attributes["gen_ai.response.model"] == "gpt-6-luna"
+    assert span.attributes["server.address"] == "openai.test"
+    assert span.attributes["gen_ai.usage.input_tokens"] == 100
+    assert span.attributes["gen_ai.usage.output_tokens"] == 0
+    assert "gen_ai.input.messages" not in span.attributes
+    data = telemetry.collect()["gen_ai.client.inference.usage.input_tokens"].data
+    assert isinstance(data, Sum)
+    assert sum(point.value for point in data.data_points) == 100
+
+
+def test_openai_incomplete_response_still_reports_usage(api: FakeOpenAI, telemetry: Telemetry) -> None:
+    api.answers = []
+    with pytest.raises(ValueError):
+        _ = make_provider("openai", None).ask(b"JPEG", None, QUESTIONS)
+    (span,) = telemetry.spans.get_finished_spans()
+    assert span.attributes is not None
+    assert span.attributes["gen_ai.usage.input_tokens"] == 100
+    assert span.attributes["error.type"] == "ValueError"
+    assert span.status.status_code == StatusCode.ERROR
+
+
+def test_openai_failure_reports_genai_error(api: FakeOpenAI, telemetry: Telemetry) -> None:
+    api.status = 503
+    with pytest.raises(InternalServerError):
+        _ = make_provider("openai", None).ask(b"JPEG", None, QUESTIONS)
+    data = telemetry.collect()["gen_ai.client.inference.duration"].data
+    assert isinstance(data, Histogram)
+    point = next(point for point in data.data_points if point.count)
+    assert point.attributes is not None
+    assert point.attributes["gen_ai.provider.name"] == "openai"
+    assert point.attributes["error.type"] == "InternalServerError"

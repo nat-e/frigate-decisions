@@ -7,11 +7,11 @@ WORKDIR /app
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    uv sync --locked --no-install-project
+    uv sync --locked --extra otel --no-install-project
 
 COPY . /app
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked
+    uv sync --locked --extra otel
 
 ENV PATH="/app/.venv/bin:$PATH"
 USER nobody
