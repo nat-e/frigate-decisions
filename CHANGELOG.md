@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.1](https://github.com/nat-e/frigate-decisions/compare/v0.1.0...v0.1.1) (2026-11-07)
+
+
+### Features
+
+* add OpenTelemetry monitoring and GenAI metrics ([#7](https://github.com/nat-e/frigate-decisions/issues/7)) ([ca758d7](https://github.com/nat-e/frigate-decisions/commit/ca758d7beedda28b34bebb4bad10b2ae8a6419ce))
+* **providers:** add OpenAI Decisions support ([#6](https://github.com/nat-e/frigate-decisions/issues/6)) ([609ab00](https://github.com/nat-e/frigate-decisions/commit/609ab005a7cf6935db26edade74b74712eeb6b23))
+
 ## [0.1.0](https://github.com/nat-e/frigate-decisions/compare/v0.1.0...v0.1.0) (2026-11-05)
 
 
