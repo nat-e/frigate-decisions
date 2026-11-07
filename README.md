@@ -61,8 +61,8 @@ environment:
   OPENAI_API_KEY: ${OPENAI_API_KEY}
 ```
 
-OpenAI answers all the camera's questions in one request, with up to 400 questions per camera.
-If any question is refused, the whole frame is skipped and a warning is logged.
+OpenAI answers all the camera's questions in one request, so a camera can have at most 400 rules.
+If OpenAI refuses a question, that rule is skipped for the frame and a warning is logged.
 
 To add another provider, see [CONTRIBUTING.md](CONTRIBUTING.md#adding-a-decision-model).
 

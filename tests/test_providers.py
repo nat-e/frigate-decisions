@@ -47,6 +47,7 @@ class FakeOpenAI:
 
 @pytest.fixture
 def api(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeOpenAI]:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     fake = FakeOpenAI()
     with httpx2.Client(transport=httpx2.MockTransport(fake.respond)) as http:
         monkeypatch.setattr(
@@ -83,19 +84,28 @@ def test_openai_sends_image_context_and_named_questions(api: FakeOpenAI) -> None
 
 
 @pytest.mark.parametrize("context", [None, ""])
-def test_openai_without_context_and_with_model_override(api: FakeOpenAI, context: str | None) -> None:
-    _ = make_provider("openai", "custom-model").ask(b"JPEG", context, QUESTIONS)
+def test_openai_without_context(api: FakeOpenAI, context: str | None) -> None:
+    _ = make_provider("openai", "gpt-6-luna").ask(b"JPEG", context, QUESTIONS)
     body = cast("dict[str, object]", json.loads(api.requests[0].content))
-    assert body["model"] == "custom-model"
     assert body["input"] == [
         {"role": "user", "content": [{"type": "input_image", "image_url": "data:image/jpeg;base64,SlBFRw=="}]}
     ]
 
 
-def test_openai_refusal_rejects_all_answers(api: FakeOpenAI) -> None:
+def test_openai_unsupported_model_is_a_config_error(api: FakeOpenAI) -> None:
+    with pytest.raises(ValueError, match=r"jev-1\.14\.0"):
+        _ = make_provider("openai", "jev-1.14.0")
+
+
+def test_openai_refused_question_is_left_out(api: FakeOpenAI) -> None:
     api.answers[1] = {"type": "refusal", "name": "door_open"}
-    with pytest.raises(ValueError, match=r"refusal.*door_open"):
-        _ = make_provider("openai", None).ask(b"JPEG", None, QUESTIONS)
+    assert make_provider("openai", None).ask(b"JPEG", None, QUESTIONS) == {"dog_on_sofa": 0.93}
+
+
+def test_openai_accepts_answers_without_names(api: FakeOpenAI) -> None:
+    for answer in api.answers:
+        answer["name"] = None
+    assert make_provider("openai", None).ask(b"JPEG", None, QUESTIONS) == {"dog_on_sofa": 0.93, "door_open": 0.12}
 
 
 @pytest.mark.parametrize("count", [1, 3])
@@ -114,7 +124,7 @@ def test_openai_rejects_invalid_probability(api: FakeOpenAI, probability: float)
 
 def test_openai_rejects_mismatched_question_names(api: FakeOpenAI) -> None:
     api.answers.reverse()
-    with pytest.raises(ValueError, match="invalid answer"):
+    with pytest.raises(ValueError, match="answered 'door_open' for question 'dog_on_sofa'"):
         _ = make_provider("openai", None).ask(b"JPEG", None, QUESTIONS)
 
 
@@ -128,6 +138,6 @@ def test_openai_api_error_propagates_without_retry(api: FakeOpenAI, status: int,
 
 def test_openai_missing_key_is_a_config_error(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_ADMIN_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_ADMIN_KEY", "admin-key")  # the SDK accepts this alone, but decisions need an API key
     with pytest.raises(ValueError, match="OPENAI_API_KEY"):
         _ = OpenAIDecisions()
