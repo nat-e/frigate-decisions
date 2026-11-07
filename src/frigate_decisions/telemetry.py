@@ -82,6 +82,9 @@ inference_duration = meter.create_histogram(
 )
 input_tokens = meter.create_counter("gen_ai.client.inference.usage.input_tokens", unit="{token}")
 output_tokens = meter.create_counter("gen_ai.client.inference.usage.output_tokens", unit="{token}")
+cache_read_tokens = meter.create_counter("gen_ai.client.inference.usage.cache_read.input_tokens", unit="{token}")
+cache_write_tokens = meter.create_counter("gen_ai.client.inference.usage.cache_write.input_tokens", unit="{token}")
+reasoning_tokens = meter.create_counter("gen_ai.client.inference.usage.reasoning.output_tokens", unit="{token}")
 input_tokens_per_call = meter.create_histogram(
     "gen_ai.client.inference.operation.input_tokens",
     unit="{token}",
@@ -152,7 +155,16 @@ class Inference:
         self._details: dict[str, AnyValue] = details
         self._capture: tuple[bool, bool] = capture
 
-    def response(self, model: str, input_count: int | None, output_count: int | None) -> None:
+    def response(
+        self,
+        model: str,
+        input_count: int | None,
+        output_count: int | None,
+        *,
+        cache_read_count: int | None = None,
+        cache_write_count: int | None = None,
+        reasoning_count: int | None = None,
+    ) -> None:
         self._attributes["gen_ai.response.model"] = model
         self._span.set_attribute("gen_ai.response.model", model)
         for direction, count, counter, histogram in (
@@ -165,6 +177,19 @@ class Inference:
                 histogram.record(count, self._attributes)
                 if count > 0:
                     counter.add(count, {**self._attributes, "gen_ai.token.modality": "unknown"})
+        for suffix, count, counter in (
+            ("cache_read.input_tokens", cache_read_count, cache_read_tokens),
+            ("cache_write.input_tokens", cache_write_count, cache_write_tokens),
+            ("reasoning.output_tokens", reasoning_count, reasoning_tokens),
+        ):
+            if count is not None and count > 0:
+                key = f"gen_ai.usage.{suffix}"
+                self._span.set_attribute(key, count)
+                self._details[key] = count
+                token_attributes = dict(self._attributes)
+                if counter is not reasoning_tokens:
+                    token_attributes["gen_ai.token.modality"] = "unknown"
+                counter.add(count, token_attributes)
 
     def output(self, answers: dict[str, float]) -> None:
         if any(self._capture):
@@ -198,7 +223,7 @@ def inference(
     capture = _capture_content(os.environ.get("OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT", "") or "NO_CONTENT")
     details: dict[str, AnyValue] = {}
     if any(capture):
-        # TypeSafe accepts structured state, not chat messages; keep its text in one user message.
+        # Decision APIs accept named questions; keep their text in one user message.
         details["gen_ai.input.messages"] = [
             {
                 "role": "user",

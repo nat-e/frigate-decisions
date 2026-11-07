@@ -8,9 +8,9 @@ from pathlib import Path
 from typing import cast
 
 from . import __doc__ as description
-from .config import ConfigError, load
+from .config import Config, ConfigError, load
 from .frigate import Frigate
-from .providers import make_provider
+from .providers import Provider, make_provider
 from .watcher import Watcher
 
 
@@ -26,6 +26,7 @@ def main() -> None:
     try:
         config = load(config_path)
         provider = make_provider(config.provider.name, config.provider.model)
+        check_question_limit(config, provider)
     except (ConfigError, ValueError) as e:
         sys.exit(f"frigate-decisions: {e}")
 
@@ -45,6 +46,14 @@ def main() -> None:
         watcher.start()
     for watcher in watchers:
         watcher.join()
+
+
+def check_question_limit(config: Config, provider: Provider) -> None:
+    """Every camera's rules are asked in one request, so they must fit the provider's limit."""
+    limit = provider.max_questions
+    for camera in config.cameras:
+        if limit is not None and len(camera.rules) > limit:
+            raise ConfigError(f"cameras.{camera.name}: {config.provider.name} takes at most {limit} rules per camera")
 
 
 if __name__ == "__main__":

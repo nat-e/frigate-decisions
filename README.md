@@ -41,12 +41,30 @@ When nothing moves, it asks nothing, so it costs nothing.
 | Provider | `provider.name` | API key |
 | :- | :- | :- |
 | [TypeSafe Jev](https://docs.typesafe.ai) | `jev` | `TYPESAFE_API_KEY` |
+| [OpenAI Decisions](https://developers.openai.com/api/docs/guides/decisions) | `openai` | `OPENAI_API_KEY` |
 
 Jev costs $0.042 per million input tokens; one camera frame with a few questions is a couple of
 thousand tokens. Image input is still experimental at TypeSafe.
 
-Other providers (Cloudflare Clef-flash, OpenAI Decisions…) fit the same interface: a class with an
-`ask(image, context, questions)` method in [`providers.py`](src/frigate_decisions/providers.py).
+To use OpenAI Decisions, set the provider in your config:
+
+```yaml
+provider:
+  name: openai
+  model: gpt-6-luna # optional: this is the default for OpenAI
+```
+
+Pass `OPENAI_API_KEY` to the container instead of `TYPESAFE_API_KEY`:
+
+```yaml
+environment:
+  OPENAI_API_KEY: ${OPENAI_API_KEY}
+```
+
+OpenAI answers all the camera's questions in one request, so a camera can have at most 400 rules.
+If OpenAI refuses a question, that rule is skipped for the frame and a warning is logged.
+
+To add another provider, see [CONTRIBUTING.md](CONTRIBUTING.md#adding-a-decision-model).
 
 ## Setup
 
@@ -147,14 +165,16 @@ the launcher leaves its API instrumentation inactive unless another OTel agent c
 
 Model calls follow the [OTel GenAI inference conventions](https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/client-inference.md),
 which are in development. TypeSafe calls use `gen_ai.provider.name=typesafe` and
-`gen_ai.operation.name=system_one`, since this API answers structured questions rather than chat messages.
+`gen_ai.operation.name=system_one`; OpenAI calls use `openai` and `decisions`.
+These APIs answer structured questions rather than chat messages.
 Each span includes requested/actual models, server address, reported token counts and
 `error.type` on failure. A call includes the SDK's retries; missing token counts stay absent.
 
 | Metric | Meaning |
 | :- | :- |
 | `gen_ai.client.inference.duration` | Call duration in seconds; its count gives the number of calls, split by `error.type` for failures |
-| `gen_ai.client.inference.usage.input_tokens` / `output_tokens` | Total token consumption, with modality `unknown` because TypeSafe reports combined counts |
+| `gen_ai.client.inference.usage.input_tokens` / `output_tokens` | Total token consumption, with modality `unknown` when the provider reports combined counts |
+| `gen_ai.client.inference.usage.cache_read.input_tokens` / `cache_write.input_tokens` / `reasoning.output_tokens` | Reported cache/reasoning subsets; these are already included in input/output totals |
 | `gen_ai.client.inference.operation.input_tokens` / `output_tokens` | Token distribution per call |
 
 GenAI message attributes are excluded by default; ordinary application logs still contain
@@ -174,7 +194,7 @@ configuration. Question text, event IDs and probabilities are never metric attri
 | `frigate_decisions.camera.last_frame` | Unix timestamp of the last fetched frame; use it to detect a stalled camera |
 | `frigate_decisions.camera.active` | 1 while asking, 0 while idle |
 | `frigate_decisions.watcher.errors` | Unexpected watcher errors by `error.type` |
-| `frigate_decisions.decisions` | Answers by `answer=yes` or `no`, using each rule's threshold |
+| `frigate_decisions.decisions` | Answers by `answer=yes` or `no`, using each rule's threshold; omitted/refused answers use `unanswered` |
 | `frigate_decisions.decision.probability` | Distribution of answer probabilities |
 | `frigate_decisions.rule.active` | Locally active rule events: 1 after a successful start, 0 after an end request |
 | `frigate_decisions.rule.events` | Successful event starts and local end requests, by `action=started` or `end_requested` |

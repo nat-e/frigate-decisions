@@ -109,7 +109,8 @@ with inference("typesafe", "system_one", "jev-test", "https://api.example.com", 
     assert any(record.event_name == "gen_ai.client.inference.operation.details" for record in records)
 
 
-def test_cli_sigterm_flushes_camera_decision_trace(tmp_path: Path) -> None:
+@pytest.mark.parametrize("provider_name", ["jev", "openai"])
+def test_cli_sigterm_flushes_camera_decision_trace(tmp_path: Path, provider_name: str) -> None:
     launcher = shutil.which("opentelemetry-instrument")
     if launcher is None:
         pytest.skip("install the otel extra to test the launcher")
@@ -141,6 +142,13 @@ def test_cli_sigterm_flushes_camera_decision_trace(tmp_path: Path) -> None:
                     b'{"model":"jev-resolved","usage":{"input_tokens":100,"output_tokens":4},'
                     + b'"answers":{"dog":{"type":"noul","noul":0.9}}}'
                 )
+            elif self.path == "/v1/decisions":
+                self.respond(
+                    b'{"model":"gpt-6-luna","usage":{"input_tokens":100,"output_tokens":0,"total_tokens":100,'
+                    + b'"input_tokens_details":{"cached_tokens":0,"cache_write_tokens":0},'
+                    + b'"output_tokens_details":{"reasoning_tokens":0}},'
+                    + b'"answers":[{"name":"dog","type":"predicate","probability":0.9}]}'
+                )
             elif self.path.startswith("/api/events/"):
                 self.respond(b'{"event_id":"evt1"}')
                 created.set()
@@ -152,16 +160,18 @@ def test_cli_sigterm_flushes_camera_decision_trace(tmp_path: Path) -> None:
         def log_message(self, format: str, *args: object) -> None:
             pass
 
-    env = {key: value for key, value in os.environ.items() if not key.startswith(("OTEL_", "TYPESAFE_"))}
+    env = {key: value for key, value in os.environ.items() if not key.startswith(("OTEL_", "TYPESAFE_", "OPENAI_"))}
     with ThreadingHTTPServer(("127.0.0.1", 0), Receiver) as server:
         worker = threading.Thread(target=server.serve_forever, daemon=True)
         worker.start()
         url = f"http://127.0.0.1:{server.server_port}"
+        model = "jev-test" if provider_name == "jev" else "gpt-6-luna"
         config = tmp_path / "config.yml"
         _ = config.write_text(f"""frigate:
   url: {url}
 provider:
-  model: jev-test
+  name: {provider_name}
+  model: {model}
 cameras:
   test:
     motion_threshold: 0
@@ -176,6 +186,8 @@ cameras:
                 "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
                 "TYPESAFE_API_KEY": "test-key",
                 "TYPESAFE_BASE_URL": url,
+                "OPENAI_API_KEY": "test-key",
+                "OPENAI_BASE_URL": f"{url}/v1",
             }
         )
         process = subprocess.Popen(
@@ -209,7 +221,8 @@ cameras:
         for span in scope.spans
     ]
     decision = next(span for span in spans if span.name == "frigate_decisions.decide")
-    inference = next(span for span in spans if span.name == "system_one jev-test")
+    operation = "system_one" if provider_name == "jev" else "decisions"
+    inference = next(span for span in spans if span.name == f"{operation} {model}")
     assert inference.parent_span_id == decision.span_id
     assert inference.trace_id == decision.trace_id
     assert any(span.kind == 3 and span.parent_span_id == decision.span_id for span in spans)

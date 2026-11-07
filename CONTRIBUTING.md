@@ -30,7 +30,7 @@ CI also builds the Docker image and checks that the app starts in it.
 
 ## Adding a decision model
 
-Write a class with an `ask(image, context, questions)` method in [`providers.py`](src/frigate_decisions/providers.py), add it to `PROVIDERS`, and list it in the README's "Decision models" table.
+Write a class with the `Provider` attributes (`image_sides`, `max_questions`) and an `ask(image, context, questions)` method in [`providers.py`](src/frigate_decisions/providers.py), add it to `PROVIDERS`, and list it in the README's "Decision models" table.
 
 ## Pull request titles
 

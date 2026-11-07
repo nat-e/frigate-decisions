@@ -190,3 +190,26 @@ def test_incomplete_answers_preserve_reported_usage(
     tokens = telemetry.collect()["gen_ai.client.inference.usage.input_tokens"].data
     assert isinstance(tokens, Sum)
     assert sum(point.value for point in tokens.data_points) == 123
+
+
+def test_cache_and_reasoning_usage_are_subsets_of_totals(telemetry: Telemetry) -> None:
+    from frigate_decisions.telemetry import inference
+
+    with inference("openai", "decisions", "model", "https://api.example.com") as observed:
+        observed.response("model", 100, 20, cache_read_count=10, cache_write_count=15, reasoning_count=5)
+    (span,) = telemetry.spans.get_finished_spans()
+    assert span.attributes is not None
+    assert span.attributes["gen_ai.usage.cache_read.input_tokens"] == 10
+    assert span.attributes["gen_ai.usage.cache_write.input_tokens"] == 15
+    assert span.attributes["gen_ai.usage.reasoning.output_tokens"] == 5
+    collected = telemetry.collect()
+    for suffix, expected in [
+        ("input_tokens", 100),
+        ("output_tokens", 20),
+        ("cache_read.input_tokens", 10),
+        ("cache_write.input_tokens", 15),
+        ("reasoning.output_tokens", 5),
+    ]:
+        data = collected[f"gen_ai.client.inference.usage.{suffix}"].data
+        assert isinstance(data, Sum)
+        assert sum(point.value for point in data.data_points) == expected
