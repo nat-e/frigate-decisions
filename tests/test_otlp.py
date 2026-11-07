@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import override
 
 import pytest
+from test_watcher import jpeg
 
 
 @pytest.mark.parametrize(("launch", "disabled"), [(True, False), (True, True), (False, False)])
@@ -105,3 +106,116 @@ with inference("typesafe", "system_one", "jev-test", "https://api.example.com") 
     ]
     assert any(record.body.string_value == "export smoke test" for record in records)
     assert any(record.event_name == "gen_ai.client.inference.operation.details" for record in records)
+
+
+def test_cli_sigterm_flushes_camera_decision_trace(tmp_path: Path) -> None:
+    launcher = shutil.which("opentelemetry-instrument")
+    if launcher is None:
+        pytest.skip("install the otel extra to test the launcher")
+    from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import ExportMetricsServiceRequest
+    from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
+
+    received: dict[str, list[bytes]] = {}
+    created = threading.Event()
+    frame = jpeg(100)
+
+    class Receiver(BaseHTTPRequestHandler):
+        def respond(self, body: bytes, content_type: str = "application/json") -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            _ = self.wfile.write(body)
+
+        def do_GET(self) -> None:
+            if self.path.startswith("/api/events"):
+                self.respond(b"[]")
+            else:
+                self.respond(frame, "image/jpeg")
+
+        def do_POST(self) -> None:
+            body = self.rfile.read(int(self.headers["Content-Length"]))
+            if self.path == "/v1/systemone":
+                self.respond(
+                    b'{"model":"jev-resolved","usage":{"input_tokens":100,"output_tokens":4},'
+                    + b'"answers":{"dog":{"type":"noul","noul":0.9}}}'
+                )
+            elif self.path.startswith("/api/events/"):
+                self.respond(b'{"event_id":"evt1"}')
+                created.set()
+            else:
+                received.setdefault(self.path, []).append(body)
+                self.respond(b"", "application/x-protobuf")
+
+        @override
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    env = {key: value for key, value in os.environ.items() if not key.startswith(("OTEL_", "TYPESAFE_"))}
+    with ThreadingHTTPServer(("127.0.0.1", 0), Receiver) as server:
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        url = f"http://127.0.0.1:{server.server_port}"
+        config = tmp_path / "config.yml"
+        _ = config.write_text(f"""frigate:
+  url: {url}
+provider:
+  model: jev-test
+cameras:
+  test:
+    motion_threshold: 0
+    rules:
+      dog:
+        question: Dog?
+""")
+        env.update(
+            {
+                "OTEL_SERVICE_NAME": "frigate-decisions-test",
+                "OTEL_EXPORTER_OTLP_ENDPOINT": url,
+                "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+                "TYPESAFE_API_KEY": "test-key",
+                "TYPESAFE_BASE_URL": url,
+            }
+        )
+        process = subprocess.Popen(
+            [launcher, "frigate-decisions", "--config", str(config)],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            assert created.wait(timeout=10), "the CLI never created a Frigate event"
+        finally:
+            process.terminate()
+            try:
+                _, stderr = process.communicate(timeout=20)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                _ = process.communicate()
+                raise
+            finally:
+                server.shutdown()
+                worker.join()
+        assert process.returncode == 0, stderr
+
+    spans = [
+        span
+        for payload in received["/v1/traces"]
+        for resource in ExportTraceServiceRequest.FromString(payload).resource_spans
+        for scope in resource.scope_spans
+        for span in scope.spans
+    ]
+    decision = next(span for span in spans if span.name == "frigate_decisions.decide")
+    inference = next(span for span in spans if span.name == "system_one jev-test")
+    assert inference.parent_span_id == decision.span_id
+    assert inference.trace_id == decision.trace_id
+    assert any(span.kind == 3 and span.parent_span_id == decision.span_id for span in spans)
+    names = {
+        metric.name
+        for payload in received["/v1/metrics"]
+        for resource in ExportMetricsServiceRequest.FromString(payload).resource_metrics
+        for scope in resource.scope_metrics
+        for metric in scope.metrics
+    }
+    assert {"frigate_decisions.decisions", "frigate_decisions.frames", "frigate_decisions.rule.events"} <= names

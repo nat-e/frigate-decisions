@@ -162,6 +162,29 @@ to `SPAN_ONLY`, `EVENT_ONLY` or `SPAN_AND_EVENT` to capture question text, camer
 answer probabilities in standard GenAI message attributes. `NO_CONTENT` is the default.
 Events use the logs pipeline. Camera images are excluded in every mode.
 
+### Camera and rule metrics
+
+Camera metrics use a `camera` attribute; rule metrics also use `rule`. Names come from the
+configuration. Question text, event IDs and probabilities are never metric attributes.
+
+| Metric | Meaning |
+| :- | :- |
+| `frigate_decisions.frames` | Frame fetch attempts, with `outcome=success` or `error` |
+| `frigate_decisions.camera.last_frame` | Unix timestamp of the last fetched frame; use it to detect a stalled camera |
+| `frigate_decisions.camera.active` | 1 while asking, 0 while idle |
+| `frigate_decisions.watcher.errors` | Unexpected watcher errors by `error.type` |
+| `frigate_decisions.decisions` | Answers by `answer=yes` or `no`, using each rule's threshold |
+| `frigate_decisions.decision.probability` | Distribution of answer probabilities |
+| `frigate_decisions.rule.active` | 1 while a rule has an open event, 0 otherwise |
+| `frigate_decisions.rule.events` | Successful event starts and local end requests, by `action=started` or `end_requested` |
+| `frigate_decisions.rule.event.duration` | First-to-last "yes" interval for each completed event, excluding video padding and the end delay |
+| `frigate_decisions.frigate.event.operations` | Create/end API attempts, including retries, by `operation` and `outcome` |
+| `frigate_decisions.frigate.event.pending_ends` | Number of event end requests awaiting a retry |
+
+Event end requests and Frigate confirmations are separate: an end can remain queued while
+Frigate is unavailable. A non-retryable HTTP 4xx end response has `outcome=discarded`.
+SIGTERM or Ctrl+C finishes the current poll before stopping, allowing the SDK to flush.
+
 ### Langfuse and other backends
 
 Any compatible OTLP backend can receive the telemetry. For Langfuse, use `http/protobuf`,

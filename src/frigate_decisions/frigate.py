@@ -10,6 +10,8 @@ from typing import NotRequired, TypedDict, cast
 
 import requests
 
+from . import telemetry
+
 log = logging.getLogger(__name__)
 
 
@@ -53,13 +55,19 @@ class Frigate:
         try:
             r = self.http.post(f"{self.url}/api/events/{camera}/{label}/create", json=body, timeout=10)
             r.raise_for_status()
-            return cast("_CreatedEvent", r.json())["event_id"]
+            event_id = cast("_CreatedEvent", r.json())["event_id"]
         except (requests.RequestException, KeyError, ValueError) as e:
+            telemetry.event_operations.add(
+                1, {"operation": "create", "outcome": "error", "error.type": type(e).__qualname__}
+            )
             log.warning("%s: can't create a %s event in Frigate: %s", camera, label, e)
             return None
+        telemetry.event_operations.add(1, {"operation": "create", "outcome": "success"})
+        return event_id
 
     def end_event(self, event_id: str, end_time: float) -> None:
         self.pending_ends.append((event_id, end_time))
+        telemetry.pending_ends.add(1)
         self.retry_ends()
 
     def retry_ends(self) -> None:
@@ -70,8 +78,16 @@ class Frigate:
                 if r.status_code >= 500:
                     raise requests.HTTPError(f"HTTP {r.status_code}")
             except requests.RequestException as e:
+                telemetry.event_operations.add(
+                    1, {"operation": "end", "outcome": "error", "error.type": type(e).__qualname__}
+                )
                 log.warning("can't end event %s yet: %s", event_id, e)
                 self.pending_ends.append((event_id, end_time))
+            else:
+                telemetry.pending_ends.add(-1)
+                telemetry.event_operations.add(
+                    1, {"operation": "end", "outcome": "discarded" if r.status_code >= 400 else "success"}
+                )
 
     def end_leftover_events(self, camera: str, labels: set[str]) -> None:
         """Events left open by a previous run would keep their review item open forever: end them."""

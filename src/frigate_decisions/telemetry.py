@@ -17,6 +17,48 @@ tracer = trace.get_tracer("frigate_decisions")
 meter = metrics.get_meter("frigate_decisions")
 events = get_logger("frigate_decisions")
 
+frames = meter.create_counter(
+    "frigate_decisions.frames", unit="{frame}", description="Frame fetch attempts by outcome."
+)
+camera_active = meter.create_gauge(
+    "frigate_decisions.camera.active", unit="1", description="Whether a camera is asking."
+)
+last_frame = meter.create_gauge(
+    "frigate_decisions.camera.last_frame", unit="s", description="Last fetched frame, Unix time."
+)
+watcher_errors = meter.create_counter("frigate_decisions.watcher.errors", unit="{error}")
+decisions = meter.create_counter(
+    "frigate_decisions.decisions", unit="{decision}", description="Answers by threshold outcome."
+)
+probability = meter.create_histogram(
+    "frigate_decisions.decision.probability",
+    unit="1",
+    description="Probability of yes for each rule.",
+    explicit_bucket_boundaries_advisory=(0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1),
+)
+rule_active = meter.create_gauge(
+    "frigate_decisions.rule.active", unit="1", description="Whether a rule has an open event."
+)
+rule_events = meter.create_counter(
+    "frigate_decisions.rule.events", unit="{event}", description="Rule event starts and end requests."
+)
+event_duration = meter.create_histogram(
+    "frigate_decisions.rule.event.duration",
+    unit="s",
+    description="First-to-last yes interval for a completed rule event.",
+    explicit_bucket_boundaries_advisory=(1, 5, 10, 30, 60, 120, 300, 600, 1800, 3600),
+)
+event_operations = meter.create_counter(
+    "frigate_decisions.frigate.event.operations",
+    unit="{operation}",
+    description="Frigate event API attempts by outcome.",
+)
+pending_ends = meter.create_up_down_counter(
+    "frigate_decisions.frigate.event.pending_ends",
+    unit="{event}",
+    description="Event end requests awaiting a retry.",
+)
+
 inference_duration = meter.create_histogram(
     "gen_ai.client.inference.duration",
     unit="s",

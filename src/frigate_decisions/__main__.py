@@ -2,6 +2,7 @@
 
 import argparse
 import logging
+import signal
 import sys
 from pathlib import Path
 from typing import cast
@@ -29,6 +30,13 @@ def main() -> None:
         sys.exit(f"frigate-decisions: {e}")
 
     watchers = [Watcher(camera, Frigate(config.frigate_url), provider) for camera in config.cameras]
+
+    def stop_watchers(_signum: int, _frame: object) -> None:
+        for watcher in watchers:
+            watcher.stop()
+
+    _ = signal.signal(signal.SIGTERM, stop_watchers)
+    _ = signal.signal(signal.SIGINT, stop_watchers)
     for watcher in watchers:
         watcher.start()
     for watcher in watchers:

@@ -7,8 +7,10 @@ import time
 from typing import Protocol, override
 
 import requests
+from opentelemetry.trace import StatusCode
 from PIL import Image, ImageChops, ImageFilter
 
+from . import telemetry
 from .config import Camera
 from .providers import Provider
 from .rules import RuleState
@@ -66,16 +68,21 @@ class Watcher(threading.Thread):
         self.last_motion: float = float("-inf")
         self.last_ask: float = float("-inf")
         self.active: bool = False
+        self._stopping: threading.Event = threading.Event()
+
+    def stop(self) -> None:
+        """Finish the current poll and stop so the SDK can flush telemetry on process exit."""
+        self._stopping.set()
 
     @override
     def run(self) -> None:
         self.frigate.end_leftover_events(self.camera.name, {rule.label for rule in self.camera.rules})
         log.info("%s: watching, %d rule(s)", self.camera.name, len(self.rules))
-        while True:
-            time.sleep(POLL_S)
+        while not self._stopping.wait(POLL_S):
             try:
                 self.step(time.time())
-            except Exception:  # keep watching whatever happens
+            except Exception as error:  # keep watching whatever happens
+                telemetry.watcher_errors.add(1, {"camera": self.camera.name, "error.type": type(error).__qualname__})
                 log.exception("%s: unexpected error", self.camera.name)
 
     def step(self, now: float) -> None:
@@ -84,10 +91,13 @@ class Watcher(threading.Thread):
         try:
             jpeg = self.frigate.latest_jpeg(cam.name)
         except requests.RequestException as e:
+            telemetry.frames.add(1, {"camera": cam.name, "outcome": "error", "error.type": type(e).__qualname__})
             log.warning("%s: can't get a frame from Frigate: %s", cam.name, e)
             jpeg = None
 
         if jpeg is not None:
+            telemetry.frames.add(1, {"camera": cam.name, "outcome": "success"})
+            telemetry.last_frame.set(now, {"camera": cam.name})
             moved = self.motion.changed(jpeg)
             if moved >= cam.motion_threshold:
                 self.last_motion = now
@@ -103,22 +113,43 @@ class Watcher(threading.Thread):
                 self.ask(jpeg, now)
 
         for state in self.rules:
+            first_yes = state.first_yes
             if end := state.check_end(now):
                 log.info("%s: %s ended", cam.name, state.rule.name)
                 self.frigate.end_event(end.event_id, end.end_time)
+                attributes = {"camera": cam.name, "rule": state.rule.name}
+                telemetry.rule_events.add(1, {**attributes, "action": "end_requested"})
+                if first_yes is not None:
+                    telemetry.event_duration.record(max(0, state.last_yes - first_yes), attributes)
+            telemetry.rule_active.set(int(state.event_id is not None), {"camera": cam.name, "rule": state.rule.name})
+        telemetry.camera_active.set(int(self.active), {"camera": cam.name})
 
     def ask(self, jpeg: bytes, now: float) -> None:
-        try:
-            answers = self.provider.ask(jpeg, self.camera.context, self.questions)
-        except Exception as e:  # noqa: BLE001 any network or API error: skip this frame
-            log.warning("%s: decision model failed: %s", self.camera.name, e)
-            return
-        log.info("%s: %s", self.camera.name, " ".join(f"{k}={v:.2f}" for k, v in answers.items()))
+        with telemetry.tracer.start_as_current_span(
+            "frigate_decisions.decide",
+            attributes={"camera": self.camera.name},
+            record_exception=False,
+            set_status_on_exception=False,
+        ) as span:
+            try:
+                answers = self.provider.ask(jpeg, self.camera.context, self.questions)
+            except Exception as e:  # noqa: BLE001 any network or API error: skip this frame
+                span.set_attribute("error.type", type(e).__qualname__)
+                span.set_status(StatusCode.ERROR)
+                log.warning("%s: decision model failed: %s", self.camera.name, e)
+                return
+            log.info("%s: %s", self.camera.name, " ".join(f"{k}={v:.2f}" for k, v in answers.items()))
 
-        for state in self.rules:
-            rule = state.rule
-            if start := state.answer(answers[rule.name], now):
-                state.event_id = self.frigate.create_event(
-                    self.camera.name, rule.label, rule.sub_label, start.score, start.pre_capture
-                )
-                log.info("%s: %s started: event %s", self.camera.name, rule.name, state.event_id)
+            for state in self.rules:
+                rule = state.rule
+                value = answers[rule.name]
+                attributes = {"camera": self.camera.name, "rule": rule.name}
+                telemetry.probability.record(value, attributes)
+                telemetry.decisions.add(1, {**attributes, "answer": "yes" if value >= rule.threshold else "no"})
+                if start := state.answer(value, now):
+                    state.event_id = self.frigate.create_event(
+                        self.camera.name, rule.label, rule.sub_label, start.score, start.pre_capture
+                    )
+                    if state.event_id is not None:
+                        telemetry.rule_events.add(1, {**attributes, "action": "started"})
+                        log.info("%s: %s started: event %s", self.camera.name, rule.name, state.event_id)
