@@ -8,10 +8,58 @@ import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import override
+from typing import cast, override
 
 import pytest
 from test_watcher import jpeg
+
+
+@pytest.mark.parametrize("log_format", ["text", "json"])
+@pytest.mark.parametrize(
+    "correlation, level, expected",
+    [
+        ("false", None, ["info", "warning"]),
+        ("true", "warning", ["warning"]),
+        ("true", "debug", ["debug", "info", "warning"]),
+    ],
+)
+def test_launcher_log_levels(log_format: str, correlation: str, level: str | None, expected: list[str]) -> None:
+    launcher = shutil.which("opentelemetry-instrument")
+    if launcher is None:
+        pytest.skip("install the otel extra to test the launcher")
+    env = {key: value for key, value in os.environ.items() if not key.startswith("OTEL_")}
+    env.update(
+        {
+            "OTEL_TRACES_EXPORTER": "none",
+            "OTEL_METRICS_EXPORTER": "none",
+            "OTEL_LOGS_EXPORTER": "none",
+            "OTEL_PYTHON_LOG_CORRELATION": correlation,
+        }
+    )
+    if level is not None:
+        env["OTEL_PYTHON_LOG_LEVEL"] = level
+    script = """
+import sys
+import structlog
+from frigate_decisions.logging import configure
+
+configure(sys.argv[1])
+log = structlog.stdlib.get_logger("frigate_decisions")
+log.debug("debug probe")
+log.info("info probe")
+log.warning("warning probe")
+"""
+    result = subprocess.run(
+        [launcher, "--", sys.executable, "-c", script, log_format],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    for name in ("debug", "info", "warning"):
+        assert result.stderr.count(f"{name} probe") == int(name in expected), result.stderr
 
 
 @pytest.mark.parametrize(("launch", "disabled"), [(True, False), (True, True), (False, False)])
@@ -111,10 +159,12 @@ with inference("typesafe", "system_one", "jev-test", "https://api.example.com", 
 
 
 @pytest.mark.parametrize("provider_name", ["jev", "openai"])
-def test_cli_sigterm_flushes_camera_decision_trace(tmp_path: Path, provider_name: str) -> None:
+@pytest.mark.parametrize("log_format", ["text", "json"])
+def test_cli_sigterm_flushes_camera_decision_trace(tmp_path: Path, provider_name: str, log_format: str) -> None:
     launcher = shutil.which("opentelemetry-instrument")
     if launcher is None:
         pytest.skip("install the otel extra to test the launcher")
+    from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsServiceRequest
     from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import ExportMetricsServiceRequest
     from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
 
@@ -185,6 +235,7 @@ cameras:
                 "OTEL_SERVICE_NAME": "frigate-decisions-test",
                 "OTEL_EXPORTER_OTLP_ENDPOINT": url,
                 "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+                "OTEL_PYTHON_LOG_CORRELATION": "true",
                 "TYPESAFE_API_KEY": "test-key",
                 "TYPESAFE_BASE_URL": url,
                 "OPENAI_API_KEY": "test-key",
@@ -192,7 +243,7 @@ cameras:
             }
         )
         process = subprocess.Popen(
-            [launcher, "--", "frigate-decisions", "--config", str(config)],
+            [launcher, "--", "frigate-decisions", "--config", str(config), "--log-format", log_format],
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -227,6 +278,30 @@ cameras:
     assert inference.parent_span_id == decision.span_id
     assert inference.trace_id == decision.trace_id
     assert any(span.kind == 3 and span.parent_span_id == decision.span_id for span in spans)
+    records = [
+        record
+        for payload in received["/v1/logs"]
+        for resource in ExportLogsServiceRequest.FromString(payload).resource_logs
+        for scope in resource.scope_logs
+        for record in scope.log_records
+    ]
+    started_log = next(record for record in records if record.body.string_value == "rule started")
+    attributes = {attribute.key: attribute.value for attribute in started_log.attributes}
+    assert attributes["camera"].string_value == "test"
+    assert attributes["rule"].string_value == "dog"
+    assert attributes["event_id"].string_value == "evt1"
+    assert attributes["probability"].double_value == 0.9
+    assert started_log.trace_id == decision.trace_id
+    assert started_log.span_id == decision.span_id
+    if log_format == "json":
+        events = [cast("dict[str, object]", json.loads(line)) for line in stderr.splitlines()]
+        started = next(event for event in events if event["message"] == "rule started")
+        assert started["camera"] == "test"
+        assert started["rule"] == "dog"
+        assert started["event_id"] == "evt1"
+        assert started["probability"] == 0.9
+        assert started["trace_id"] == decision.trace_id.hex()
+        assert started["span_id"] == decision.span_id.hex()
     names = {
         metric.name
         for payload in received["/v1/metrics"]

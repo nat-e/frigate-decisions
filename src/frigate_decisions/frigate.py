@@ -4,15 +4,15 @@ Uses Frigate's internal API (port 5000), which has no login: run this service on
 network as Frigate and don't expose that port.
 """
 
-import logging
 import time
 from typing import NotRequired, TypedDict, cast
 
 import requests
+import structlog
 
 from . import telemetry
 
-log = logging.getLogger(__name__)
+log = structlog.stdlib.get_logger(__name__)
 
 
 class _CreatedEvent(TypedDict):
@@ -47,7 +47,7 @@ class Frigate:
             r.raise_for_status()
             return r.content
         except requests.RequestException as e:
-            log.warning("%s: can't get a frame from Frigate: %s", camera, e)
+            log.warning("can't get a frame from Frigate", camera=camera, error=str(e))
             return None
 
     def create_event(
@@ -69,7 +69,7 @@ class Frigate:
             telemetry.event_operations.add(
                 1, {"operation": "create", "outcome": "error", "error.type": type(e).__qualname__}
             )
-            log.warning("%s: can't create a %s event in Frigate: %s", camera, label, e)
+            log.warning("can't create an event in Frigate", camera=camera, label=label, probability=score, error=str(e))
             return None
         telemetry.event_operations.add(1, {"operation": "create", "outcome": "success"})
         return event_id
@@ -92,7 +92,7 @@ class Frigate:
                 telemetry.event_operations.add(
                     1, {"operation": "end", "outcome": "error", "error.type": type(e).__qualname__}
                 )
-                log.warning("can't end event %s yet: %s", event_id, e)
+                log.warning("can't end event yet", event_id=event_id, error=str(e))
                 self._pending_ends.append((event_id, end_time))
             else:
                 telemetry.pending_ends.add(-1)
@@ -112,8 +112,11 @@ class Frigate:
             for event in cast("list[_Event]", r.json()):
                 if (event.get("data") or {}).get("type") == "api":
                     log.info(
-                        "%s: ending event %s (%s) left open by a previous run", camera, event["id"], event["label"]
+                        "ending event left open by a previous run",
+                        camera=camera,
+                        event_id=event["id"],
+                        label=event["label"],
                     )
                     self.end_event(event["id"], min(time.time(), event["start_time"] + 60))
         except (requests.RequestException, ValueError) as e:
-            log.warning("%s: can't check for events left open: %s", camera, e)
+            log.warning("can't check for events left open", camera=camera, error=str(e))

@@ -221,6 +221,25 @@ a collector or another backend using their signal-specific endpoints, or disable
 exporters. To send traces to several backends, route them through an OpenTelemetry Collector.
 Display of captured content depends on the backend's support for current GenAI message attributes.
 
+## Logging
+
+Logs use readable text by default. For JSON, run `frigate-decisions --log-format json`,
+or add `FRIGATE_DECISIONS_LOG_FORMAT: json` to the Docker Compose `environment` section.
+The command-line option overrides the environment variable; both accept `text` or `json`.
+
+Both formats write to stderr, with one decision log per rule. JSON writes one object per line:
+
+```json
+{"time":"2026-11-08T07:00:00+00:00","level":"INFO","logger":"frigate_decisions.watcher","message":"rule started","camera":"litter","rule":"gaia_visit","event_id":"evt1","probability":0.93}
+```
+
+Every JSON log has `time` (UTC), `level`, `logger`, and `message`. Camera, rule, event ID,
+and probability are separate fields where they apply. Exceptions include a traceback in
+`exception`. In Loki, use `| json | rule="gaia_visit"` to filter by rule.
+
+If external OpenTelemetry logging instrumentation injects trace context, the logs include
+`trace_id` and `span_id`. Frigate Decisions does not configure tracing itself.
+
 ## Writing good questions
 
 - Ask about one thing you can see in a single frame: *Is a dog on the sofa?*, not *Did the dog
