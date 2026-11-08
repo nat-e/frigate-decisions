@@ -105,7 +105,7 @@ class Watcher(threading.Thread):
 
         for state in self.rules:
             if end := state.check_end(now):
-                self.log.bind(rule=state.rule.name).info("rule ended", event_id=end.event_id)
+                self.log.info("rule ended", rule=state.rule.name, event_id=end.event_id)
                 self.frigate.end_event(end.event_id, end.end_time)
 
     def ask(self, jpeg: bytes, now: float) -> None:

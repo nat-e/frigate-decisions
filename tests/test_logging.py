@@ -4,7 +4,7 @@ import sys
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from typing import cast, override
 
 import pytest
 import structlog
@@ -92,6 +92,30 @@ def test_injected_trace_ids_with_preconfigured_logging(capsys: pytest.CaptureFix
         assert event["span_id"] == "b" * 16
         assert "otelTraceID" not in event
         assert "otelSpanID" not in event
+
+
+def test_external_exporter_is_preserved(capsys: pytest.CaptureFixture[str]) -> None:
+    class Exporter(logging.Handler):
+        def __init__(self) -> None:
+            super().__init__()
+            self.records: list[logging.LogRecord] = []
+
+        @override
+        def emit(self, record: logging.LogRecord) -> None:
+            self.records.append(record)
+
+    exporter = Exporter()
+    logging.basicConfig(handlers=[logging.StreamHandler(), exporter], force=True)
+    configure("json")
+    structlog.stdlib.get_logger("app").info("decision", camera="litter", rule="gaia_visit", probability=0.7)
+    logging.getLogger("dependency").warning("request failed")
+    assert len(exporter.records) == 2
+    body = cast("dict[str, object]", exporter.records[0].msg)
+    assert body["event"] == "decision"
+    assert body["camera"] == "litter"
+    assert body["rule"] == "gaia_visit"
+    assert body["probability"] == 0.7
+    assert len(capsys.readouterr().err.splitlines()) == 2
 
 
 @pytest.mark.parametrize("mode", ["text", "json"])

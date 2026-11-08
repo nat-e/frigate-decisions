@@ -42,8 +42,14 @@ def configure(log_format: str) -> None:
             ],
         )
     )
-    # External instrumentation may have configured logging before the entry point.
-    logging.basicConfig(level=logging.INFO, handlers=[handler], force=True)
+    root = logging.getLogger()
+    # Replace basicConfig's console output while preserving external exporters.
+    for existing in root.handlers[:]:
+        if type(existing) is logging.StreamHandler:
+            root.removeHandler(cast("logging.Handler", existing))
+            existing.close()
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
     structlog.configure(
         processors=[structlog.stdlib.filter_by_level, structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
         logger_factory=structlog.stdlib.LoggerFactory(),
