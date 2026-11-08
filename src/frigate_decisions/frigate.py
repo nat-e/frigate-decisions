@@ -4,13 +4,13 @@ Uses Frigate's internal API (port 5000), which has no login: run this service on
 network as Frigate and don't expose that port.
 """
 
-import logging
 import time
 from typing import NotRequired, TypedDict, cast
 
 import requests
+import structlog
 
-log = logging.getLogger(__name__)
+log = structlog.stdlib.get_logger(__name__)
 
 
 class _CreatedEvent(TypedDict):
@@ -55,7 +55,7 @@ class Frigate:
             r.raise_for_status()
             return cast("_CreatedEvent", r.json())["event_id"]
         except (requests.RequestException, KeyError, ValueError) as e:
-            log.warning("%s: can't create a %s event in Frigate: %s", camera, label, e)
+            log.warning("can't create an event in Frigate", camera=camera, label=label, probability=score, error=str(e))
             return None
 
     def end_event(self, event_id: str, end_time: float) -> None:
@@ -70,7 +70,7 @@ class Frigate:
                 if r.status_code >= 500:
                     raise requests.HTTPError(f"HTTP {r.status_code}")
             except requests.RequestException as e:
-                log.warning("can't end event %s yet: %s", event_id, e)
+                log.warning("can't end event yet", event_id=event_id, error=str(e))
                 self.pending_ends.append((event_id, end_time))
 
     def end_leftover_events(self, camera: str, labels: set[str]) -> None:
@@ -85,8 +85,11 @@ class Frigate:
             for event in cast("list[_Event]", r.json()):
                 if (event.get("data") or {}).get("type") == "api":
                     log.info(
-                        "%s: ending event %s (%s) left open by a previous run", camera, event["id"], event["label"]
+                        "ending event left open by a previous run",
+                        camera=camera,
+                        event_id=event["id"],
+                        label=event["label"],
                     )
                     self.end_event(event["id"], min(time.time(), event["start_time"] + 60))
         except (requests.RequestException, ValueError) as e:
-            log.warning("%s: can't check for events left open: %s", camera, e)
+            log.warning("can't check for events left open", camera=camera, error=str(e))

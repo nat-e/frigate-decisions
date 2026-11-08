@@ -1,12 +1,12 @@
 """Watches one camera: asks the questions while something moves, and creates the Frigate events."""
 
 import io
-import logging
 import threading
 import time
 from typing import Protocol, override
 
 import requests
+import structlog
 from PIL import Image, ImageChops, ImageFilter
 
 from .config import Camera
@@ -15,7 +15,7 @@ from .rules import RuleState
 
 POLL_S = 1  # how often to grab a frame for the motion check
 
-log = logging.getLogger(__name__)
+log = structlog.stdlib.get_logger(__name__)
 
 
 class FrigateAPI(Protocol):
@@ -58,6 +58,7 @@ class Watcher(threading.Thread):
     def __init__(self, camera: Camera, frigate: FrigateAPI, provider: Provider):
         super().__init__(name=camera.name, daemon=True)
         self.camera: Camera = camera
+        self.log: structlog.stdlib.BoundLogger = log.bind(camera=camera.name)
         self.frigate: FrigateAPI = frigate
         self.provider: Provider = provider
         self.rules: list[RuleState] = [RuleState(rule) for rule in camera.rules]
@@ -70,13 +71,13 @@ class Watcher(threading.Thread):
     @override
     def run(self) -> None:
         self.frigate.end_leftover_events(self.camera.name, {rule.label for rule in self.camera.rules})
-        log.info("%s: watching, %d rule(s)", self.camera.name, len(self.rules))
+        self.log.info("watching", rule_count=len(self.rules))
         while True:
             time.sleep(POLL_S)
             try:
                 self.step(time.time())
             except Exception:  # keep watching whatever happens
-                log.exception("%s: unexpected error", self.camera.name)
+                self.log.exception("unexpected error")
 
     def step(self, now: float) -> None:
         cam = self.camera
@@ -84,7 +85,7 @@ class Watcher(threading.Thread):
         try:
             jpeg = self.frigate.latest_jpeg(cam.name)
         except requests.RequestException as e:
-            log.warning("%s: can't get a frame from Frigate: %s", cam.name, e)
+            self.log.warning("can't get a frame from Frigate", error=str(e))
             jpeg = None
 
         if jpeg is not None:
@@ -92,33 +93,36 @@ class Watcher(threading.Thread):
             if moved >= cam.motion_threshold:
                 self.last_motion = now
                 if not self.active:
-                    log.info("%s: movement (%.1f%% of pixels), asking", cam.name, moved * 100)
+                    self.log.info("movement, asking", motion_fraction=moved)
 
             was_active = self.active
             self.active = now - self.last_motion < cam.idle_after or any(r.busy for r in self.rules)
             if was_active and not self.active:
-                log.info("%s: quiet again", cam.name)
+                self.log.info("quiet again")
             if self.active and now - self.last_ask >= cam.ask_every:
                 self.last_ask = now
                 self.ask(jpeg, now)
 
         for state in self.rules:
             if end := state.check_end(now):
-                log.info("%s: %s ended", cam.name, state.rule.name)
+                self.log.bind(rule=state.rule.name).info("rule ended", event_id=end.event_id)
                 self.frigate.end_event(end.event_id, end.end_time)
 
     def ask(self, jpeg: bytes, now: float) -> None:
         try:
             answers = self.provider.ask(jpeg, self.camera.context, self.questions)
         except Exception as e:  # noqa: BLE001 any network or API error: skip this frame
-            log.warning("%s: decision model failed: %s", self.camera.name, e)
+            self.log.warning("decision model failed", error=str(e))
             return
-        log.info("%s: %s", self.camera.name, " ".join(f"{k}={v:.2f}" for k, v in answers.items()))
 
         for state in self.rules:
             rule = state.rule
-            if start := state.answer(answers[rule.name], now):
+            rule_log = self.log.bind(rule=rule.name)
+            probability = answers[rule.name]
+            rule_log.info("decision", probability=probability)
+            if start := state.answer(probability, now):
                 state.event_id = self.frigate.create_event(
                     self.camera.name, rule.label, rule.sub_label, start.score, start.pre_capture
                 )
-                log.info("%s: %s started: event %s", self.camera.name, rule.name, state.event_id)
+                if state.event_id is not None:
+                    rule_log.info("rule started", event_id=state.event_id, probability=start.score)

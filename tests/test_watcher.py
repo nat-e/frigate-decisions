@@ -2,6 +2,7 @@ import io
 from collections.abc import Iterator
 
 from PIL import Image
+from structlog.testing import capture_logs
 
 from frigate_decisions.config import Camera, Rule
 from frigate_decisions.watcher import Watcher
@@ -76,3 +77,34 @@ def test_movement_then_dog_creates_and_ends_one_event() -> None:
     assert frigate.created == [("living_room", "dog", "Sofa")]
     assert frigate.ended == ["evt1"]
     assert provider.calls < 20  # stopped asking once quiet
+
+
+def test_one_decision_per_rule_with_separate_camera_context() -> None:
+    rules = (Rule(name="cat", question="Cat?"), Rule(name="dog", question="Dog?"))
+    with capture_logs() as logs:
+        for name, answers in (("litter", [0.91, 0.12]), ("door", [0.23, 0.84])):
+            watcher = Watcher(Camera(name=name, rules=rules), FakeFrigate([]), FakeProvider(answers))
+            watcher.ask(b"frame", 0)
+
+    decisions = [event for event in logs if event["event"] == "decision"]
+    assert [(event["camera"], event["rule"], event["probability"]) for event in decisions] == [
+        ("litter", "cat", 0.91),
+        ("litter", "dog", 0.12),
+        ("door", "cat", 0.23),
+        ("door", "dog", 0.84),
+    ]
+    starts = [event for event in logs if event["event"] == "rule started"]
+    assert [(event["camera"], event["rule"], event["event_id"]) for event in starts] == [
+        ("litter", "cat", "evt1"),
+        ("door", "dog", "evt1"),
+    ]
+
+
+def test_end_log_keeps_event_id_after_rule_resets() -> None:
+    with capture_logs() as logs:
+        _ = run([jpeg(100), jpeg(200)] + [jpeg(200)] * 60, [0.9, 0.9, 0.9] + [0.1] * 30, 60)
+    ends = [event for event in logs if event["event"] == "rule ended"]
+    assert len(ends) == 1
+    assert ends[0]["camera"] == "living_room"
+    assert ends[0]["rule"] == "dog_on_sofa"
+    assert ends[0]["event_id"] == "evt1"

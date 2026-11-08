@@ -1,7 +1,7 @@
 """Entry point: python -m frigate_decisions --config config.yml"""
 
 import argparse
-import logging
+import os
 import sys
 from pathlib import Path
 from typing import cast
@@ -9,6 +9,7 @@ from typing import cast
 from . import __doc__ as description
 from .config import ConfigError, load
 from .frigate import Frigate
+from .logging import configure
 from .providers import make_provider
 from .watcher import Watcher
 
@@ -16,11 +17,18 @@ from .watcher import Watcher
 def main() -> None:
     parser = argparse.ArgumentParser(prog="frigate-decisions", description=description)
     _ = parser.add_argument("--config", type=Path, default=Path("/config/config.yml"))
-    config_path = cast("Path", parser.parse_args().config)
-
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S")
-    for noisy in ("httpx2", "httpcore2", "urllib3", "typesafe_sdk"):  # one line per HTTP request otherwise
-        logging.getLogger(noisy).setLevel(logging.WARNING)
+    _ = parser.add_argument(
+        "--log-format",
+        choices=("text", "json"),
+        default=os.environ.get("FRIGATE_DECISIONS_LOG_FORMAT", "text"),
+        help="log output format (default: FRIGATE_DECISIONS_LOG_FORMAT, or text)",
+    )
+    args = parser.parse_args()
+    config_path = cast("Path", args.config)
+    log_format = cast("str", args.log_format)
+    if log_format not in ("text", "json"):
+        parser.error(f"invalid FRIGATE_DECISIONS_LOG_FORMAT: {log_format!r} (choose text or json)")
+    configure(log_format)
 
     try:
         config = load(config_path)
