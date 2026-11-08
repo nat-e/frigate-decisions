@@ -36,6 +36,9 @@ class RuleState:
         self._event_id: str | None = None
         self._attributes: dict[str, str] = {"camera": camera, "rule": rule.name}
         telemetry.rule_active.add(0, self._attributes)
+        # Give Prometheus a baseline before the first event.
+        telemetry.rule_events.add(0, {**self._attributes, "action": "started"})
+        telemetry.rule_events.add(0, {**self._attributes, "action": "end_requested"})
 
     @property
     def busy(self) -> bool:

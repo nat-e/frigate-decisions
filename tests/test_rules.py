@@ -1,9 +1,33 @@
 from collections.abc import Iterable
 
+from conftest import Telemetry
+from opentelemetry.sdk.metrics.export import Sum
+
 from frigate_decisions.config import Rule
 from frigate_decisions.rules import PADDING_S, End, RuleState, Start
 
 RULE = Rule(name="dog_on_sofa", question="Is a dog on the sofa?", threshold=0.6, min_duration=5, end_after=10)
+
+
+def test_event_counters_start_at_zero_for_each_camera_and_rule(telemetry: Telemetry) -> None:
+    cameras = ("front", "back")
+    rules = (RULE, Rule(name="cat_seen", question="Is there a cat?"))
+    for camera in cameras:
+        for rule in rules:
+            _ = RuleState(rule, camera)
+
+    events = telemetry.collect()["frigate_decisions.rule.events"].data
+    assert isinstance(events, Sum)
+    assert {
+        (point.attributes["camera"], point.attributes["rule"], point.attributes["action"]): point.value
+        for point in events.data_points
+        if point.attributes and point.attributes["camera"] in cameras
+    } == {
+        (camera, rule.name, action): 0
+        for camera in cameras
+        for rule in rules
+        for action in ("started", "end_requested")
+    }
 
 
 def feed(state: RuleState, answers: Iterable[tuple[float, float]]) -> list[Start | End]:
