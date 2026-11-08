@@ -42,6 +42,8 @@ def configure(log_format: str) -> None:
             ],
         )
     )
+    # Keep an existing level; OTel's basicConfig wrapper preserves its exporter.
+    logging.basicConfig(level=logging.INFO)
     root = logging.getLogger()
     # Replace basicConfig's console output while preserving external exporters.
     for existing in root.handlers[:]:
@@ -49,7 +51,6 @@ def configure(log_format: str) -> None:
             root.removeHandler(cast("logging.Handler", existing))
             existing.close()
     root.addHandler(handler)
-    root.setLevel(logging.INFO)
     # Exporters need ordinary LogRecords; add output metadata only in the formatter.
     structlog.configure(
         processors=[structlog.stdlib.filter_by_level, structlog.stdlib.render_to_log_kwargs],

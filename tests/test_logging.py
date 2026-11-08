@@ -20,6 +20,7 @@ def restore_logging() -> Iterator[None]:
     handlers, level = root.handlers[:], root.level
     settings = structlog.get_config()
     factory = logging.getLogRecordFactory()
+    root.setLevel(logging.INFO)
     yield
     for handler in root.handlers:
         if handler not in handlers:
@@ -82,7 +83,7 @@ def test_injected_trace_ids_with_preconfigured_logging(capsys: pytest.CaptureFix
         return record
 
     logging.setLogRecordFactory(correlated_record)
-    logging.basicConfig(format="preconfigured: %(message)s", force=True)
+    logging.basicConfig(level=logging.INFO, format="preconfigured: %(message)s", force=True)
     configure("json")
     structlog.stdlib.get_logger("app").info("decision", probability=0.7)
     logging.getLogger("dependency").warning("request failed")
@@ -105,7 +106,7 @@ def test_external_exporter_is_preserved(capsys: pytest.CaptureFixture[str]) -> N
             self.records.append(record)
 
     exporter = Exporter()
-    logging.basicConfig(handlers=[logging.StreamHandler(), exporter], force=True)
+    logging.basicConfig(level=logging.INFO, handlers=[logging.StreamHandler(), exporter], force=True)
     configure("json")
     structlog.stdlib.get_logger("app").info("decision", camera="litter", rule="gaia_visit", probability=0.7)
     logging.getLogger("dependency").warning("request failed")
@@ -119,6 +120,9 @@ def test_external_exporter_is_preserved(capsys: pytest.CaptureFixture[str]) -> N
 
 @pytest.mark.parametrize("mode", ["text", "json"])
 def test_level_filtering(mode: str, capsys: pytest.CaptureFixture[str]) -> None:
+    root = logging.getLogger()
+    root.handlers = []
+    root.setLevel(logging.WARNING)
     configure(mode)
     log = structlog.stdlib.get_logger("app")
     log.debug("hidden debug")
@@ -129,6 +133,21 @@ def test_level_filtering(mode: str, capsys: pytest.CaptureFixture[str]) -> None:
     assert "visible" in output
     assert "litter" in output
     assert "\x1b" not in output
+
+
+@pytest.mark.parametrize("mode", ["text", "json"])
+@pytest.mark.parametrize("level", [logging.DEBUG, logging.WARNING])
+def test_preconfigured_level_is_preserved(mode: str, level: int, capsys: pytest.CaptureFixture[str]) -> None:
+    logging.basicConfig(level=level, force=True)
+    configure(mode)
+    for log in (structlog.stdlib.get_logger("app"), logging.getLogger("dependency")):
+        _ = log.debug("debug probe")
+        _ = log.info("info probe")
+        _ = log.warning("warning probe")
+    output = capsys.readouterr().err
+    assert output.count("debug probe") == (2 if level == logging.DEBUG else 0)
+    assert output.count("info probe") == (2 if level == logging.DEBUG else 0)
+    assert output.count("warning probe") == 2
 
 
 @pytest.mark.parametrize(

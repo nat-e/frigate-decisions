@@ -14,6 +14,54 @@ import pytest
 from test_watcher import jpeg
 
 
+@pytest.mark.parametrize("log_format", ["text", "json"])
+@pytest.mark.parametrize(
+    "correlation, level, expected",
+    [
+        ("false", None, ["info", "warning"]),
+        ("true", "warning", ["warning"]),
+        ("true", "debug", ["debug", "info", "warning"]),
+    ],
+)
+def test_launcher_log_levels(log_format: str, correlation: str, level: str | None, expected: list[str]) -> None:
+    launcher = shutil.which("opentelemetry-instrument")
+    if launcher is None:
+        pytest.skip("install the otel extra to test the launcher")
+    env = {key: value for key, value in os.environ.items() if not key.startswith("OTEL_")}
+    env.update(
+        {
+            "OTEL_TRACES_EXPORTER": "none",
+            "OTEL_METRICS_EXPORTER": "none",
+            "OTEL_LOGS_EXPORTER": "none",
+            "OTEL_PYTHON_LOG_CORRELATION": correlation,
+        }
+    )
+    if level is not None:
+        env["OTEL_PYTHON_LOG_LEVEL"] = level
+    script = """
+import sys
+import structlog
+from frigate_decisions.logging import configure
+
+configure(sys.argv[1])
+log = structlog.stdlib.get_logger("frigate_decisions")
+log.debug("debug probe")
+log.info("info probe")
+log.warning("warning probe")
+"""
+    result = subprocess.run(
+        [launcher, "--", sys.executable, "-c", script, log_format],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    for name in ("debug", "info", "warning"):
+        assert result.stderr.count(f"{name} probe") == int(name in expected), result.stderr
+
+
 @pytest.mark.parametrize(("launch", "disabled"), [(True, False), (True, True), (False, False)])
 def test_standard_launcher_exports_all_signals(
     tmp_path: Path,
