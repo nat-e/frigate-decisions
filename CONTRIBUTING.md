@@ -9,7 +9,7 @@ Open a [GitHub issue](https://github.com/nat-e/frigate-decisions/issues), with t
 Install [uv](https://docs.astral.sh/uv/), then:
 
 ```sh
-uv sync                                       # install, with the dev tools
+uv sync --extra otel                          # install, with telemetry and dev tools
 uv run frigate-decisions --config config.yml  # run it outside Docker
 ```
 
@@ -30,7 +30,7 @@ CI also builds the Docker image and checks that the app starts in it.
 
 ## Adding a decision model
 
-Write a class with an `ask(image, context, questions)` method in [`providers.py`](src/frigate_decisions/providers.py), add it to `PROVIDERS`, and list it in the README's "Decision models" table.
+Write a class with the `Provider` attributes (`image_sides`, `max_questions`) and an `ask(image, context, questions)` method in [`providers.py`](src/frigate_decisions/providers.py), add it to `PROVIDERS`, and list it in the README's "Decision models" table.
 
 ## Pull request titles
 

@@ -1,6 +1,6 @@
 """The YAML config: which cameras to watch, and the questions to ask about them."""
 
-from dataclasses import dataclass, fields
+from dataclasses import MISSING, dataclass, fields
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -26,6 +26,10 @@ class Rule:
     label: str = ""  # Frigate label of the event, the rule name by default
     sub_label: str | None = None
 
+    def __post_init__(self) -> None:
+        if not self.label:
+            object.__setattr__(self, "label", self.name)  # frozen: no plain assignment
+
 
 @dataclass(frozen=True)
 class Camera:
@@ -38,10 +42,20 @@ class Camera:
 
 
 @dataclass(frozen=True)
+class FrigateSettings:
+    url: str = "http://frigate:5000"
+
+
+@dataclass(frozen=True)
+class ProviderSettings:
+    name: str = "jev"
+    model: str | None = None  # the provider's default model otherwise
+
+
+@dataclass(frozen=True)
 class Config:
-    frigate_url: str
-    provider: str
-    model: str | None
+    frigate: FrigateSettings
+    provider: ProviderSettings
     cameras: tuple[Camera, ...]
 
 
@@ -56,10 +70,6 @@ def load(path: Path) -> Config:
 def parse(data: object) -> Config:
     root = _mapping(data, "config")
     _check_keys(root, {"frigate", "provider", "cameras"}, "config")
-    frigate = _mapping(root.get("frigate"), "frigate")
-    _check_keys(frigate, {"url"}, "frigate")
-    provider = _mapping(root.get("provider"), "provider")
-    _check_keys(provider, {"name", "model"}, "provider")
     cameras_data = _mapping(root.get("cameras"), "cameras")
     if not cameras_data:
         raise ConfigError("config: add at least one camera under 'cameras'")
@@ -72,16 +82,14 @@ def parse(data: object) -> Config:
         if not rules_data:
             raise ConfigError(f"{where}: add at least one rule under 'rules'")
         rules = tuple(
-            _build(Rule, {"label": name, **_mapping(rule, f"{where}.rules.{name}")}, f"{where}.rules.{name}", name=name)
+            _build(Rule, _mapping(rule, f"{where}.rules.{name}"), f"{where}.rules.{name}", name=name)
             for name, rule in rules_data.items()
         )
         cameras.append(_build(Camera, cam, where, name=cam_name, rules=rules))
 
-    model = provider.get("model")
     return Config(
-        frigate_url=str(frigate.get("url", "http://frigate:5000")).rstrip("/"),
-        provider=str(provider.get("name", "jev")),
-        model=None if model is None else str(model),
+        frigate=_build(FrigateSettings, _mapping(root.get("frigate"), "frigate"), "frigate"),
+        provider=_build(ProviderSettings, _mapping(root.get("provider"), "provider"), "provider"),
         cameras=tuple(cameras),
     )
 
@@ -96,17 +104,25 @@ def _mapping(value: object, where: str) -> dict[str, object]:
 
 
 def _build[T: DataclassInstance](cls: type[T], data: dict[str, object], where: str, **fixed: object) -> T:
-    """Make a `cls` from `data`, with clear errors for unknown or missing keys."""
-    allowed = {f.name for f in fields(cls)} - set(fixed)
-    _check_keys(data, allowed, where)
+    """Make a `cls` from `data`, with clear errors for unknown, missing or mistyped keys.
+
+    A key without a value gets its default.
+    """
+    _check_keys(data, {f.name for f in fields(cls)} - set(fixed), where)
+    data = {k: v for k, v in data.items() if v is not None}
     for f in fields(cls):
-        value = data.get(f.name)
-        if f.type is float and value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))):
+        if f.name in fixed:
+            continue
+        if f.name not in data:
+            if f.default is MISSING and f.default_factory is MISSING:
+                raise ConfigError(f"{where}: missing {f.name!r}")
+            continue
+        value = data[f.name]
+        if f.type is float and (isinstance(value, bool) or not isinstance(value, (int, float))):
             raise ConfigError(f"{where}.{f.name}: expected a number, got {value!r}")
-    try:
-        return cls(**data, **fixed)
-    except TypeError as e:  # a required key is missing
-        raise ConfigError(f"{where}: {e}") from e
+        if f.type in (str, str | None) and not isinstance(value, str):
+            raise ConfigError(f"{where}.{f.name}: expected text, got {value!r}")
+    return cls(**data, **fixed)
 
 
 def _check_keys(data: dict[str, object], allowed: set[str], where: str) -> None:

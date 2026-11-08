@@ -5,15 +5,17 @@ import threading
 import time
 from typing import Protocol, override
 
-import requests
 import structlog
+from opentelemetry.trace import StatusCode
 from PIL import Image, ImageChops, ImageFilter
 
+from . import telemetry
 from .config import Camera
 from .providers import Provider
 from .rules import RuleState
 
 POLL_S = 1  # how often to grab a frame for the motion check
+QUESTION_PREFIX = "Looking at the camera image: "  # every provider gets the same wording
 
 log = structlog.stdlib.get_logger(__name__)
 
@@ -21,17 +23,15 @@ log = structlog.stdlib.get_logger(__name__)
 class FrigateAPI(Protocol):
     """The Frigate calls a Watcher makes. frigate.Frigate makes them for real; tests fake them."""
 
-    def latest_jpeg(self, camera: str) -> bytes: ...
+    def latest_jpeg(self, camera: str) -> bytes | None: ...
 
     def create_event(
-        self, camera: str, label: str, sub_label: str | None, score: float, pre_capture: float
+        self, camera: str, label: str, sub_label: str | None, score: float, start_time: float
     ) -> str | None: ...
 
     def end_event(self, event_id: str, end_time: float) -> None: ...
 
     def retry_ends(self) -> None: ...
-
-    def end_leftover_events(self, camera: str, labels: set[str]) -> None: ...
 
 
 class MotionCheck:
@@ -61,34 +61,53 @@ class Watcher(threading.Thread):
         self.log: structlog.stdlib.BoundLogger = log.bind(camera=camera.name)
         self.frigate: FrigateAPI = frigate
         self.provider: Provider = provider
-        self.rules: list[RuleState] = [RuleState(rule) for rule in camera.rules]
-        self.questions: dict[str, str] = {rule.name: rule.question for rule in camera.rules}
+        self.rules: list[RuleState] = [RuleState(rule, camera.name) for rule in camera.rules]
+        self.questions: dict[str, str] = {rule.name: QUESTION_PREFIX + rule.question for rule in camera.rules}
         self.motion: MotionCheck = MotionCheck()
         self.last_motion: float = float("-inf")
         self.last_ask: float = float("-inf")
         self.active: bool = False
+        self._stopping: threading.Event = threading.Event()
+
+    def stop(self) -> None:
+        """Finish the current poll, end the open events and stop."""
+        self._stopping.set()
 
     @override
     def run(self) -> None:
-        self.frigate.end_leftover_events(self.camera.name, {rule.label for rule in self.camera.rules})
         self.log.info("watching", rule_count=len(self.rules))
-        while True:
-            time.sleep(POLL_S)
+        while not self._stopping.wait(POLL_S):
             try:
                 self.step(time.time())
-            except Exception:  # keep watching whatever happens
+            except Exception as error:  # keep watching whatever happens
+                telemetry.watcher_errors.add(1, {"camera": self.camera.name, "error.type": type(error).__qualname__})
                 self.log.exception("unexpected error")
+        try:
+            self.finish(time.time())
+        except Exception:
+            self.log.exception("can't end the open events")
+
+    def finish(self, now: float) -> None:
+        """End the open events, and retry the ends Frigate hasn't accepted yet."""
+        ends = [(state.rule.name, end) for state in self.rules if (end := state.finish(now))]
+        for rule_name, end in ends:
+            self.log.info("ending event on shutdown", rule=rule_name, event_id=end.event_id)
+            self.frigate.end_event(end.event_id, end.end_time)  # also retries the earlier ends
+        if not ends:
+            self.frigate.retry_ends()
 
     def step(self, now: float) -> None:
-        cam = self.camera
-        self.frigate.retry_ends()
         try:
-            jpeg = self.frigate.latest_jpeg(cam.name)
-        except requests.RequestException as e:
-            self.log.warning("can't get a frame from Frigate", error=str(e))
-            jpeg = None
+            self._step(now)
+        finally:
+            telemetry.camera_active.set(int(self.active), {"camera": self.camera.name})
 
+    def _step(self, now: float) -> None:
+        cam = self.camera
+        jpeg = self.frigate.latest_jpeg(cam.name)
+        telemetry.frames.add(1, {"camera": cam.name, "outcome": "success" if jpeg is not None else "error"})
         if jpeg is not None:
+            telemetry.last_frame.set(now, {"camera": cam.name})
             moved = self.motion.changed(jpeg)
             if moved >= cam.motion_threshold:
                 self.last_motion = now
@@ -109,20 +128,50 @@ class Watcher(threading.Thread):
                 self.frigate.end_event(end.event_id, end.end_time)
 
     def ask(self, jpeg: bytes, now: float) -> None:
-        try:
-            answers = self.provider.ask(jpeg, self.camera.context, self.questions)
-        except Exception as e:  # noqa: BLE001 any network or API error: skip this frame
-            self.log.warning("decision model failed", error=str(e))
-            return
+        with telemetry.tracer.start_as_current_span(
+            "frigate_decisions.decide",
+            attributes={"camera": self.camera.name},
+            record_exception=False,
+            set_status_on_exception=False,
+        ) as span:
+            try:
+                image = fit(jpeg, *self.provider.image_sides)
+                answers = self.provider.ask(image, self.camera.context, self.questions)
+            except Exception as e:  # noqa: BLE001 any network or API error: skip this frame
+                span.set_attribute("error.type", type(e).__qualname__)
+                span.set_status(StatusCode.ERROR)
+                self.log.warning("decision model failed", error=str(e))
+                return
 
-        for state in self.rules:
-            rule = state.rule
-            rule_log = self.log.bind(rule=rule.name)
-            probability = answers[rule.name]
-            rule_log.info("decision", probability=probability)
-            if start := state.answer(probability, now):
-                state.event_id = self.frigate.create_event(
-                    self.camera.name, rule.label, rule.sub_label, start.score, start.pre_capture
+            for state in self.rules:
+                rule = state.rule
+                rule_log = self.log.bind(rule=rule.name)
+                if rule.name not in answers:
+                    telemetry.decisions.add(1, {"camera": self.camera.name, "rule": rule.name, "answer": "unanswered"})
+                    rule_log.warning("no answer")
+                    continue
+                probability = answers[rule.name]
+                rule_log.info("decision", probability=probability)
+                if not (start := state.answer(probability, now)):
+                    continue
+                event_id = self.frigate.create_event(
+                    self.camera.name, rule.label, rule.sub_label, start.score, start.start_time
                 )
-                if state.event_id is not None:
-                    rule_log.info("rule started", event_id=state.event_id, probability=start.score)
+                if event_id:  # otherwise the next "yes" tries again
+                    state.started(event_id)
+                    rule_log.info("rule started", event_id=event_id, probability=start.score)
+
+
+def fit(jpeg: bytes, min_side: int, max_side: int) -> bytes:
+    """Scale the JPEG so its sides are between `min_side` and `max_side` pixels, keeping its shape."""
+    img = Image.open(io.BytesIO(jpeg))
+    scale = min(1.0, max_side / max(img.size))
+    scale = max(scale, min_side / min(img.size))
+    if scale == 1.0:
+        return jpeg
+    out = io.BytesIO()
+    size = (round(img.width * scale), round(img.height * scale))
+    # Pillow's type for `size` includes numpy arrays, unknown without numpy installed
+    resized = img.convert("RGB").resize(size)  # pyright: ignore[reportUnknownMemberType]
+    resized.save(out, "JPEG", quality=90)
+    return out.getvalue()

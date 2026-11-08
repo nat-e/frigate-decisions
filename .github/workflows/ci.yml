@@ -34,7 +34,7 @@ jobs:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
 
-      - run: uv sync --locked
+      - run: uv sync --locked --extra otel
       - run: uv run ruff format --check
       - run: uv run ruff check
       - run: uv run basedpyright

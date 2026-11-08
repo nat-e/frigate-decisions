@@ -50,8 +50,9 @@ def configure(log_format: str) -> None:
             existing.close()
     root.addHandler(handler)
     root.setLevel(logging.INFO)
+    # Exporters need ordinary LogRecords; add output metadata only in the formatter.
     structlog.configure(
-        processors=[structlog.stdlib.filter_by_level, structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
+        processors=[structlog.stdlib.filter_by_level, structlog.stdlib.render_to_log_kwargs],
         logger_factory=structlog.stdlib.LoggerFactory(),
         wrapper_class=structlog.stdlib.BoundLogger,
     )

@@ -10,7 +10,7 @@ import pytest
 import structlog
 
 from frigate_decisions import __main__
-from frigate_decisions.config import Config
+from frigate_decisions.config import Config, ConfigError
 from frigate_decisions.logging import configure
 
 
@@ -110,11 +110,10 @@ def test_external_exporter_is_preserved(capsys: pytest.CaptureFixture[str]) -> N
     structlog.stdlib.get_logger("app").info("decision", camera="litter", rule="gaia_visit", probability=0.7)
     logging.getLogger("dependency").warning("request failed")
     assert len(exporter.records) == 2
-    body = cast("dict[str, object]", exporter.records[0].msg)
-    assert body["event"] == "decision"
-    assert body["camera"] == "litter"
-    assert body["rule"] == "gaia_visit"
-    assert body["probability"] == 0.7
+    assert exporter.records[0].getMessage() == "decision"
+    assert exporter.records[0].__dict__["camera"] == "litter"
+    assert exporter.records[0].__dict__["rule"] == "gaia_visit"
+    assert exporter.records[0].__dict__["probability"] == 0.7
     assert len(capsys.readouterr().err.splitlines()) == 2
 
 
@@ -151,14 +150,11 @@ def test_cli_format_selection(env: str | None, args: list[str], expected: str, m
     monkeypatch.setattr(__main__, "configure", selected.append)
 
     def load_config(path: Path) -> Config:
-        return Config("http://frigate:5000", "jev", None, ())
-
-    def make_provider(name: str, model: str | None) -> object:
-        return object()
+        raise ConfigError("stop after logging setup")
 
     monkeypatch.setattr(__main__, "load", load_config)
-    monkeypatch.setattr(__main__, "make_provider", make_provider)
-    __main__.main()
+    with pytest.raises(SystemExit, match="stop after logging setup"):
+        __main__.main()
     assert selected == [expected]
 
 
