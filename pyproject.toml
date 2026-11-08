@@ -1,6 +1,6 @@
 [project]
 name = "frigate-decisions"
-version = "0.1.1"
+version = "0.1.2"
 description = "Ask your Frigate cameras yes/no questions with a decision model, and turn the answers into Frigate events."
 readme = "README.md"
 license = "MIT"
