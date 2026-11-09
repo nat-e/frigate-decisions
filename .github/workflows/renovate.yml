@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   renovate:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     env:
       # renovate: datasource=github-releases depName=renovatebot/renovate
       RENOVATE_VERSION: 44.206.0
