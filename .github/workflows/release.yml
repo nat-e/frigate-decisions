@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   release-please:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       # The App's token, unlike GITHUB_TOKEN, lets the release PR run CI and
       # the release tag trigger the image build.
