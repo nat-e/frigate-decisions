@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       # renovate: datasource=github-releases depName=renovatebot/renovate
-      RENOVATE_VERSION: 44.181.7
+      RENOVATE_VERSION: 44.206.0
     steps:
       - name: Get a token from the GitHub App
         id: app-token
