@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/nat-e/frigate-decisions/compare/v0.1.2...v0.1.3) (2026-11-10)
+
+
+### Bug Fixes
+
+* **deps:** update python docker tag to v3.15 ([#16](https://github.com/nat-e/frigate-decisions/issues/16)) ([fd56ce5](https://github.com/nat-e/frigate-decisions/commit/fd56ce54ebb0285f056043927b0dc38cd3c70692))
+
 ## [0.1.2](https://github.com/nat-e/frigate-decisions/compare/v0.1.1...v0.1.2) (2026-11-08)
 
 
